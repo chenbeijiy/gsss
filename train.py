@@ -142,11 +142,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
 
                 # iteration = 6000
-                if  iteration % opt.densification_interval == 0 and iteration < opt.atom_proliferation_until:
+                if  iteration % opt.densification_interval == 0 and iteration < opt.atom_proliferation_until:  # <7000
                     gaussians.atomize()
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+ 
+                if iteration == 7000:
+                    print(gaussians.atom_scale)
 
             # Optimizer step
             if iteration < opt.iterations:

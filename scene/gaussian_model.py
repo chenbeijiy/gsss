@@ -135,11 +135,12 @@ class GaussianModel:
 
         dist = torch.sqrt(dist2)
         self.atom_scale = torch.quantile(dist, torch.tensor([atom_init_quantile]).cuda()).item()   # 得到原子尺寸
+        print("atom scale:",self.atom_scale)
         dist[dist<self.atom_scale] = self.atom_scale  # 原子化
         # self.atom_scale = 0.01 * self.spatial_lr_scale
         # dist = torch.ones((fused_point_cloud.shape[0]), device="cuda") * self.atom_scale
 
-        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2)
+        scales = torch.log(dist)[...,None].repeat(1, 2)
         rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
 
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
@@ -430,7 +431,9 @@ class GaussianModel:
         clone = self._xyz.shape[0]
         
         # max_grad = min(max_grad * iteration / 7000, max_grad)      # 线性预热，帮助前期产生更多原子高斯
+        # split_mask = torch.logical_and(padded_grad >= split_grad, torch.max(self.get_scaling, dim=1).values > self.atom_scale)
         self.densify_and_split(grads, max_grad, grads_abs, Q, extent)
+
         split = self._xyz.shape[0]
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()

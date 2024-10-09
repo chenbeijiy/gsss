@@ -28,7 +28,12 @@ def load_ply(path):
         
         scales = np.exp(scales)
 
-        data = np.sum(scales,axis=1,keepdims=True)
+        # data = np.sum(scales,axis=1,keepdims=True)
+        data = scales[:,0]
+
+        min_x = np.min(data)
+
+        equal_rows_count = np.sum(np.all(scales == scales[:, [0]], axis=1))
 
         data_min = np.min(data)
         data_max = np.max(data)
@@ -39,13 +44,13 @@ def load_ply(path):
         return data
 
     
-data = load_ply("./test/point_cloud.ply")
+data = load_ply("./test/point_cloud1.ply")
 
 # 将数据展平为一维数组
-data_flat = data.flatten()
+# data_flat = data.flatten()
 
 # 统计每个值的出现次数
-unique_values, counts = np.unique(data_flat, return_counts=True)
+unique_values, counts = np.unique(data, return_counts=True)
 
 # 创建一个包含值和对应数量的字典
 value_count_dict = {float(value): count for value, count in zip(unique_values, counts)}

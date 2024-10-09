@@ -1,0 +1,1 @@
+Namespace(atom_init_quantile=0.01, data_device='cuda', eval=False, images='images', model_path='./output/scan24', render_items=['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature'], resolution=2, sh_degree=3, source_path='/media/jonas/V/PythonProjects/data/dtu-2dgs/scan24', white_background=False)
