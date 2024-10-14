@@ -31,8 +31,6 @@ def load_ply(path):
         # data = np.sum(scales,axis=1,keepdims=True)
         data = scales[:,0]
 
-        min_x = np.min(data)
-
         equal_rows_count = np.sum(np.all(scales == scales[:, [0]], axis=1))
 
         data_min = np.min(data)
@@ -44,7 +42,7 @@ def load_ply(path):
         return data
 
     
-data = load_ply("./test/point_cloud1.ply")
+data = load_ply("./eval/dtu/scan24/point_cloud/iteration_30000/point_cloud.ply")
 
 # 将数据展平为一维数组
 # data_flat = data.flatten()

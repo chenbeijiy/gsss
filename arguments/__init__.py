@@ -96,8 +96,15 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
 
-        self.atom_proliferation_until = 7000  # 原子化
-        self.warm_up_until = 1000
+        self.atom_proliferation_begin = 15000  # 原子化
+        self.atom_proliferation_until = 30000 
+        self.atom_interval = 300
+        self.warm_up_until = 7000
+
+        self.hierachical_interval = 500
+        self.hierachical_until = 30000
+        self.hierachical_depth = []
+        self.hierachical_scaling_low = []
         
         
 

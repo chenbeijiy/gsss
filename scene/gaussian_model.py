@@ -56,6 +56,10 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+
+        self.lod1_scaling_lower_bound = 0.2
+        self.lod_scaling_ratio = 4
+
         self.setup_functions()
 
     def capture(self):
@@ -136,7 +140,7 @@ class GaussianModel:
         dist = torch.sqrt(dist2)
         self.atom_scale = torch.quantile(dist, torch.tensor([atom_init_quantile]).cuda()).item()   # 得到原子尺寸
         print("atom scale:",self.atom_scale)
-        dist[dist<self.atom_scale] = self.atom_scale  # 原子化
+        # dist[dist<self.atom_scale] = self.atom_scale  # 原子化
         # self.atom_scale = 0.01 * self.spatial_lr_scale
         # dist = torch.ones((fused_point_cloud.shape[0]), device="cuda") * self.atom_scale
 
@@ -454,12 +458,72 @@ class GaussianModel:
 
     def atomize(self):
         dist = self.get_scaling
-        atom_mask = torch.min(self.get_scaling, dim=1).values <= self.atom_scale
+        atom_mask = torch.min(self.get_scaling, dim=1).values <= self.atom_scale/2
         dist[atom_mask] = self.atom_scale
         
         scaling_new = torch.log(dist)
         optimizable_tensors = self.replace_tensor_to_optimizer(scaling_new, "scaling")
         self._scaling = optimizable_tensors["scaling"]
         # geometric progression ensures the atom scale will be optimized into 1/2 at 7k iteration
-        self.atom_scale*=0.99
-        dist[atom_mask]*=0.99
+        self.atom_scale*=0.98
+        dist[atom_mask]*=0.98
+
+    def get_dir_max_scaling(self, scaling, rots):
+        '''
+            rots: N, 3, 3
+        '''
+        axis = torch.argmax(scaling, dim=-1)
+        max_scaling = scaling[torch.arange(scaling.shape[0]), axis]
+        dirs = rots.gather(2, axis[:, None, None].expand(-1, 3, -1)).squeeze(-1)
+        
+        return dirs, max_scaling, axis
+    
+
+    def densify_and_split_along_maxscaling(self, grads, grad_threshold, scene_extent, visi=None, N=2, n_std=2):
+        n_init_points = self.get_xyz.shape[0]
+        # Extract points that satisfy the gradient condition
+        padded_grad = torch.zeros((n_init_points), device="cuda")
+        padded_grad[:grads.shape[0]] = grads.squeeze()
+        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        selected_pts_mask = torch.logical_and(selected_pts_mask,
+                                              torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+
+        if self.large_percent_dense is not None and (torch.cuda.memory_allocated(0) / 1024**3 < self.max_mem):
+            densify_pts_mask = torch.max(self.get_scaling, dim=1).values > self.large_percent_dense * scene_extent
+            inside, _ = self.get_inside_gaus_normalized()
+            densify_pts_mask = torch.logical_and(densify_pts_mask, inside)
+            if visi is not None:   # 寻找首次相交高斯
+                padded_vis = torch.zeros((n_init_points), device="cuda").bool()
+                padded_vis[:visi.shape[0]] = visi
+                densify_pts_mask = torch.logical_and(densify_pts_mask, padded_vis)
+            selected_pts_mask = torch.logical_or(selected_pts_mask, densify_pts_mask)
+            
+        scaling = self.get_scaling[selected_pts_mask]
+        rots = build_rotation(self._rotation[selected_pts_mask])
+        dirs, max_scaling, axis = self.get_dir_max_scaling(scaling, rots)  # 获取最大轴方向
+        radii = (n_std * max_scaling / 3.)[..., None] # 3 std
+        new_xyz1 = self.get_xyz[selected_pts_mask] + dirs * radii  # 新高斯位置均匀划分旧高斯最大尺度
+        new_xyz2 = self.get_xyz[selected_pts_mask] - dirs * radii
+        new_xyz = torch.cat((new_xyz1, new_xyz2), dim=0)
+        
+        new_scaling = scaling.detach().clone()
+        new_scaling[torch.arange(new_scaling.shape[0]), axis] = max_scaling / (0.8*N)
+        new_scaling = self.scaling_inverse_activation(new_scaling)
+        new_scaling = torch.cat((new_scaling, new_scaling), dim=0)
+        
+        new_rotation = self._rotation[selected_pts_mask]
+        new_rotation = torch.cat((new_rotation, new_rotation), dim=0)
+        
+        new_features_dc = self._features_dc[selected_pts_mask]
+        new_features_dc = torch.cat((new_features_dc, new_features_dc), dim=0)
+        new_features_rest = self._features_rest[selected_pts_mask]
+        new_features_rest = torch.cat((new_features_rest, new_features_rest), dim=0)
+        
+        new_opacity = self._opacity[selected_pts_mask]
+        new_opacity = torch.cat((new_opacity, new_opacity), dim=0)
+        new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
+        
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
+
+        prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+        self.prune_points(prune_filter)

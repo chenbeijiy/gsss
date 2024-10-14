@@ -121,17 +121,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration == opt.iterations:
                 progress_bar.close()
 
-            # Log and save
-            if tb_writer is not None:
-                tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
-                tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
-
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
-            if (iteration in saving_iterations):
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
-                scene.save(iteration)
-
-
             # Densification
             if iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
@@ -141,20 +130,38 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
 
-                # # iteration = 6000
-                # if  iteration % opt.densification_interval == 0 and iteration < opt.atom_proliferation_until:  # <7000
+                # iteration = 7000
+                # if  iteration % opt.atom_interval == 0 and iteration <= opt.atom_proliferation_until: 
                 #     gaussians.atomize()
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
  
-                if iteration == 7000:
-                    print(gaussians.atom_scale)
+                # if iteration == 7000:
+                #     print(gaussians.atom_scale/0.99)
+
+            elif  iteration % opt.atom_interval == 0 and iteration <= opt.atom_proliferation_until: 
+                    gaussians.atomize()
+
+            # ATOM
+            # if  iteration == 7000: 
+            #     gaussians.atomize()
 
             # Optimizer step
             if iteration < opt.iterations:
+            # if iteration < 7000:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+
+            # Log and save
+            if tb_writer is not None:
+                tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
+
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            if (iteration in saving_iterations):
+                print("\n[ITER {}] Saving Gaussians".format(iteration))
+                scene.save(iteration)
 
             if iteration in checkpoint_iterations:
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

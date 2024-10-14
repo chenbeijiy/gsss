@@ -8,7 +8,7 @@ parser = ArgumentParser(description="Full evaluation script parameters")
 parser.add_argument("--skip_training", action="store_true")
 parser.add_argument("--skip_rendering", action="store_true")
 parser.add_argument("--skip_metrics", action="store_true")
-parser.add_argument("--output_path", default="./eval")
+parser.add_argument("--output_path", default="./eval/dtu")
 parser.add_argument('--dtu', "-dtu", default="../data/dtu-2dgs")
 args, _ = parser.parse_known_args()
 
