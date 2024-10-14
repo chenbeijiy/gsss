@@ -43,6 +43,7 @@ def load_ply(path):
 
     
 data = load_ply("./eval/dtu/scan24/point_cloud/iteration_30000/point_cloud.ply")
+# data = load_ply("./test/scan241/point_cloud/iteration_7000/point_cloud.ply")
 
 # 将数据展平为一维数组
 # data_flat = data.flatten()

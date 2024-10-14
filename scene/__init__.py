@@ -29,6 +29,7 @@ class Scene:
         self.model_path = args.model_path
         self.loaded_iter = None
         self.gaussians = gaussians
+        self.atom_init_quantile = 0.1
 
         if load_iteration:
             if load_iteration == -1:
@@ -80,7 +81,7 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent,0.1)
+            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent,self.atom_init_quantile)
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))

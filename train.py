@@ -11,6 +11,7 @@
 
 import os
 import torch
+import math
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
@@ -24,12 +25,65 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
 from utils.loss_utils import edge_aware_normal_loss
+from utils.point_utils import depth_to_normal
 
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+
+def compute_projection_scale_and_distance(lod_scaling_limit, fovx, fovy, width, height, pixel_size=1.0):
+    """
+    Calculate the distance at which the smallest Gaussian scale appears as one pixel.
+    
+    Args:
+    - scale (torch.Tensor): The scale of the Gaussian in 3D space, assumed to be in the same unit as the focal length.
+    - fovx (float): Horizontal field of view in radians.
+    - fovy (float): Vertical field of view in radians.
+    - width (int): Width of the image in pixels.
+    - height (int): Height of the image in pixels.
+    - pixel_size (float): The size of a pixel in the same unit as the focal length. Typically set to 1.0 for unit consistency in image processing. (= screensize)
+
+    Returns:
+    - float: The maximum distance where the smallest dimension appears as one pixel.
+    """
+        
+    # Compute the focal lengths from field of view
+    focal_length_x = width / (2.0 * math.tan(fovx / 2.0))
+    focal_length_y = height / (2.0 * math.tan(fovy / 2.0))
+
+    # Use the smaller of the two focal lengths to ensure visibility in both dimensions
+    focal_length = min(focal_length_x, focal_length_y)
+    # calculate the distance where the 2D projection of the scale constraint equals the predefined screensize threshold (Sec 4.4 eq.6)
+    max_distance = focal_length * lod_scaling_limit / pixel_size
+    
+    return max_distance
+
+
+def compose_hlod_gaussian_for_all_views(opt,gaussians, views, pixel_size=1.0):
+        
+    scaling_ratio = gaussians.lod_scaling_ratio
+    
+    camera_center = torch.stack([view.camera_center for view in views]).mean(dim=0)
+    # camera_center = camera_center.cpu()
+    
+    view = views[0]
+    lod_scaling_limit = 0.003125
+    lod_max_dist_upper_bound = compute_projection_scale_and_distance(lod_scaling_limit, view.FoVx, view.FoVy, view.image_width, view.image_height, pixel_size=pixel_size)
+    for i in range(1,4):
+        opt.hierachical_depth.append(lod_max_dist_upper_bound)
+        lod_max_dist_upper_bound *= scaling_ratio
+    
+    dists_lod = torch.sqrt(((gaussians.get_xyz - camera_center)**2).sum(dim=1))  # 即为点到相机中心点距离
+
+    levels_lod = torch.where(dists_lod < opt.hierachical_depth[0], 0,  # 区间 1
+               torch.where(dists_lod < opt.hierachical_depth[1], 1,  # 区间 2
+               torch.where(dists_lod < opt.hierachical_depth[2], 2,  # 区间 3
+               3)))  # 区间 4
+    
+    return levels_lod
+
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
@@ -72,6 +126,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
+        # levels_lod = compose_hlod_gaussian_for_all_views(opt,gaussians, viewpoint_stack)
+
 
         # LOSS
         gt_image = viewpoint_cam.original_image.cuda()
@@ -79,8 +135,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
-        # if iteration < opt.atom_proliferation_until:  # until = 7000
-        #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(render_pkg["mean_depth"], viewpoint_cam).permute(2,0,1))
+        # if iteration < opt.atom_proliferation_until: 
+        #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal( viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
         #     loss += opt.lambda_normal * Lnormal   # lambda = 0.1
 
         # regularization
@@ -122,6 +178,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Densification
+            # iteration = 15000
             if iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -130,22 +187,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
 
-                # iteration = 7000
-                # if  iteration % opt.atom_interval == 0 and iteration <= opt.atom_proliferation_until: 
-                #     gaussians.atomize()
+                # iteration = 6000
+                if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration > opt.atom_proliferation_begin: 
+                    # gaussians.atomize1(levels_lod)
+                    gaussians.atomize1()
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
  
-                # if iteration == 7000:
-                #     print(gaussians.atom_scale/0.99)
-
-            elif  iteration % opt.atom_interval == 0 and iteration <= opt.atom_proliferation_until: 
-                    gaussians.atomize()
-
-            # ATOM
-            # if  iteration == 7000: 
-            #     gaussians.atomize()
+            # elif  iteration % opt.atom_interval == 0 and iteration <= opt.atom_proliferation_until: 
+            #         gaussians.atomize1()
 
             # Optimizer step
             if iteration < opt.iterations:
