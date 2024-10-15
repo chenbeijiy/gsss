@@ -11,6 +11,7 @@
 
 import torch
 import numpy as np
+import math
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
 import os
@@ -65,7 +66,7 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
 
-        self.scaling_lower_bound = []
+        self.scaling_limit = 0
         self.lod_scaling_ratio = 4
 
         self.setup_functions()
@@ -146,13 +147,21 @@ class GaussianModel:
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda())[0], 0.0000001)
 
         dist = torch.sqrt(dist2)
+
+        atom_init_quantile = 0.3
+
         self.atom_scale = torch.quantile(dist, torch.tensor([atom_init_quantile]).cuda()).item()   # 得到原子尺寸
-        self.atom_scale_all = torch.full((4,),self.atom_scale,dtype=float).cuda()
+        lods = max(self.levels,3)+1
+        self.atom_scale_all = torch.full((lods,),self.atom_scale,dtype=float).cuda()
+        # self.scaling_limit = self.atom_scale/2
         initial_scale = self.atom_scale
-        for i in range(4):
+        for i in range(lods):
             self.atom_scale_all[i] = initial_scale
-            initial_scale /= 5  # 将下一个值设为前一个值的 1/5
+            initial_scale /= 2 
+
+        self.atom_scale_all = torch.flip(self.atom_scale_all, [0])
         print("atom scale_all:",self.atom_scale_all)
+        
         # dist[dist<self.atom_scale] = self.atom_scale  # 原子化
         # self.atom_scale = 0.01 * self.spatial_lr_scale
         # dist = torch.ones((fused_point_cloud.shape[0]), device="cuda") * self.atom_scale
@@ -279,6 +288,7 @@ class GaussianModel:
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
         self.active_sh_degree = self.max_sh_degree
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -417,6 +427,9 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
         
+        selected_pts_mask = torch.logical_and(selected_pts_mask,
+                                              torch.max(self.get_scaling, dim=1).values > self.atom_scale)
+        
         new_xyz = self._xyz[selected_pts_mask]
         stds = self.get_scaling[selected_pts_mask]
         stds = torch.cat([stds, 0 * torch.ones_like(stds[:,:1])], dim=-1)
@@ -446,12 +459,15 @@ class GaussianModel:
         before = self._xyz.shape[0]
         self.densify_and_clone(grads, max_grad, grads_abs, Q, extent)
         clone = self._xyz.shape[0]
+        # print("clone number:",clone-before)
         
         # max_grad = min(max_grad * iteration / 7000, max_grad)      # 线性预热，帮助前期产生更多原子高斯
         # split_mask = torch.logical_and(padded_grad >= split_grad, torch.max(self.get_scaling, dim=1).values > self.atom_scale)
+        # self.atom_scale = 0.001454
+        before = self._xyz.shape[0]
         self.densify_and_split(grads, max_grad, grads_abs, Q, extent)
-
         split = self._xyz.shape[0]
+        # print("split number:",split-before)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
@@ -483,50 +499,48 @@ class GaussianModel:
         self.atom_scale*=0.99
         dist[atom_mask]*=0.99
 
-    def atomize1(self):#,levels_lod):
-        # dist = self.get_scaling
-        # atom_scale = self.atom_scale_all[levels_lod]
-            
+    def atomize1(self, levels_lod):
+        
+        atom_scale = self.atom_scale_all[levels_lod]
+        before = self._xyz.shape[0]
         N = 2
         atom_mask = torch.min(self.get_scaling, dim=1).values < self.atom_scale
         atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 5
         selected_pts_mask = torch.logical_and(atom_mask,atom_mask1)
-        print("number:",torch.sum(selected_pts_mask).item())
-        # dist[selected_pts_mask] = self.atom_scale
-        
-        # scaling_new = torch.log(dist)
-        # optimizable_tensors = self.replace_tensor_to_optimizer(scaling_new, "scaling")
-        # self._scaling = optimizable_tensors["scaling"]
 
         scaling = self.get_scaling[selected_pts_mask]
-        # atom_selected_scales = atom_scale[selected_pts_mask]
+        atom_selected_scales = atom_scale[selected_pts_mask]
+        atom_selected_scales = atom_selected_scales.unsqueeze(1).repeat(1, 2)
         rots = build_rotation(self._rotation[selected_pts_mask])
         dirs, max_scaling, axis = self.get_dir_max_scaling(scaling, rots)  # 获取最大轴方向
         radii = (2 * max_scaling / 3.)[..., None] # 3 std
         new_xyz1 = self.get_xyz[selected_pts_mask] + dirs * radii  # 新高斯位置均匀划分旧高斯最大尺度
         new_xyz2 = self.get_xyz[selected_pts_mask] - dirs * radii
         new_xyz = torch.cat((new_xyz1, new_xyz2), dim=0)
-        # new_scaling = torch.log(dist).repeat(N,1)
         new_scaling = scaling.detach().clone()
-        # new_scaling[:] = atom_selected_scales
-        new_scaling[:] = self.atom_scale
+        # halfatom_mask = (torch.max(scaling, dim=1).values/torch.min(scaling, dim=1).values) > 10
+        new_scaling[:] = atom_selected_scales
+        # new_scaling[halfatom_mask][:,1] *= 1.5
+        # new_scaling[:] = self.atom_scale
         new_scaling = self.scaling_inverse_activation(new_scaling)
         new_scaling = torch.cat((new_scaling, new_scaling), dim=0)
 
-        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)      # 将旋转矩阵重复 N 次。   # (2 * P, 4)
+        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)    # (2 * P, 4)
 
-        # 将原始点的特征重复 N 次。
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)  # (2 * P, 1, 3)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)     # (2 * P, 15, 3)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)   # (2 * P, 1)
 
-        # 调用另一个方法 densification_postfix，该方法对新生成的点执行后处理操作（此处跟densify_and_clone一样）。
-        # self.atom_scale*=0.98
+        # self.atom_scale*=0.99
         # dist[atom_mask]*=0.99
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
-        self.prune_points(prune_filter)    # 根据修剪过滤器，修剪模型中的一些参数。
+        self.prune_points(prune_filter)   
+
+        atom_split = self._xyz.shape[0]
+
+        print("atom split number:",atom_split-before)
 
         dist = self.get_scaling
         scaling_new = torch.log(dist)
@@ -593,3 +607,40 @@ class GaussianModel:
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
+
+    def prune_overlap(self, min_opacity, prune_overlap_threshold):
+                
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
+                
+        dist = torch.sqrt(distCUDA2(self._xyz)[0])
+        prune_overlap_mask = (dist < prune_overlap_threshold)
+        prune_mask = torch.logical_or(prune_mask, prune_overlap_mask)
+
+        print("prune_overlap number:",torch.sum(prune_mask).item())
+
+        self.prune_points(prune_mask)
+        
+        torch.cuda.empty_cache()
+
+    def set_maxd(self, points, cameras, scales, dist_ratio=0.95, levels=-1):
+        all_dist = torch.tensor([]).cuda()
+        self.cam_infos = torch.empty(0, 4).float().cuda()
+        for scale in scales:
+            for cam in cameras[scale]:
+                cam_center = cam.camera_center
+                cam_info = torch.tensor([cam_center[0], cam_center[1], cam_center[2], scale]).float().cuda()
+                self.cam_infos = torch.cat((self.cam_infos, cam_info.unsqueeze(dim=0)), dim=0)
+                dist = torch.sqrt(torch.sum((points - cam_center)**2, dim=1))
+                dist_max = torch.quantile(dist, dist_ratio)  
+                dist_min = torch.quantile(dist, 1 - dist_ratio)
+                new_dist = torch.tensor([dist_min, dist_max]).float().cuda()
+                new_dist = new_dist * scale
+                all_dist = torch.cat((all_dist, new_dist), dim=0)
+        dist_max = torch.quantile(all_dist, dist_ratio)
+        dist_min = torch.quantile(all_dist, 1 - dist_ratio)
+        self.max_dist = dist_max
+        self.min_dist = dist_min
+        if levels == -1:
+            self.levels = torch.round(torch.log2(dist_max/dist_min)).int().item() + 1
+        else:
+            self.levels = levels

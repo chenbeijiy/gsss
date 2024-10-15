@@ -61,14 +61,11 @@ def compute_projection_scale_and_distance(lod_scaling_limit, fovx, fovy, width, 
     return max_distance
 
 
-def compose_hlod_gaussian_for_all_views(opt,gaussians, views, pixel_size=1.0):
+def compose_hlod_gaussian_for_all_views(opt,gaussians, view, camera_center,pixel_size=1.0):
         
     scaling_ratio = gaussians.lod_scaling_ratio
     
-    camera_center = torch.stack([view.camera_center for view in views]).mean(dim=0)
-    # camera_center = camera_center.cpu()
-    
-    view = views[0]
+    # lod_scaling_limit = gaussians.lod_scaling_limit
     lod_scaling_limit = 0.003125
     lod_max_dist_upper_bound = compute_projection_scale_and_distance(lod_scaling_limit, view.FoVx, view.FoVy, view.image_width, view.image_height, pixel_size=pixel_size)
     for i in range(1,4):
@@ -81,6 +78,17 @@ def compose_hlod_gaussian_for_all_views(opt,gaussians, views, pixel_size=1.0):
                torch.where(dists_lod < opt.hierachical_depth[1], 1,  # 区间 2
                torch.where(dists_lod < opt.hierachical_depth[2], 2,  # 区间 3
                3)))  # 区间 4
+    
+    return levels_lod
+
+def compose_hlod_gaussian_for_all_views1(opt, gaussians,camera_center,resolution_scale=[1.0]):
+        
+    dists_lod = torch.sqrt(((gaussians.get_xyz - camera_center)**2).sum(dim=1))  # 即为点到相机距离
+    opt.hierachical_depth = torch.linspace(gaussians.min_dist,gaussians.max_dist,max(gaussians.levels,3)).cuda()
+    # pred_level = torch.log2(gaussians.standard_dist/dists_lod)
+    # pred_level = torch.min(torch.max(pred_level,0),gaussians.levels)
+
+    levels_lod = torch.searchsorted(opt.hierachical_depth, dists_lod, right=True)
     
     return levels_lod
 
@@ -108,6 +116,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    # first_iter = 7000
     for iteration in range(first_iter, opt.iterations + 1):        
 
         iter_start.record()
@@ -121,14 +130,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
+
+        camera_center = torch.stack([view.camera_center for view in viewpoint_stack]).mean(dim=0)
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
-        # levels_lod = compose_hlod_gaussian_for_all_views(opt,gaussians, viewpoint_stack)
-
-
         # LOSS
         gt_image = viewpoint_cam.original_image.cuda()
 
@@ -136,7 +144,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
         # if iteration < opt.atom_proliferation_until: 
-        #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal( viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
+        #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
         #     loss += opt.lambda_normal * Lnormal   # lambda = 0.1
 
         # regularization
@@ -189,8 +197,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 # iteration = 6000
                 if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration > opt.atom_proliferation_begin: 
+                    # levels_lod = compose_hlod_gaussian_for_all_views(opt, gaussians, viewpoint_cam,camera_center)
+                    levels_lod = compose_hlod_gaussian_for_all_views1(opt, gaussians, viewpoint_cam.camera_center)
                     # gaussians.atomize1(levels_lod)
-                    gaussians.atomize1()
+                    gaussians.atomize1(levels_lod)
+
+                # if iteration % opt.pruning_overlap_interval == 0:
+                #     gaussians.prune_overlap(opt.opacity_cull, opt.prune_overlap_threshold)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()

@@ -12,8 +12,9 @@
 import os
 import random
 import json
+import torch
 from utils.system_utils import searchForMaxIteration
-from scene.dataset_readers import sceneLoadTypeCallbacks
+from scene.dataset_readers import sceneLoadTypeCallbacks,storePly
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
@@ -29,6 +30,7 @@ class Scene:
         self.model_path = args.model_path
         self.loaded_iter = None
         self.gaussians = gaussians
+        self.resolution_scales = resolution_scales
         self.atom_init_quantile = 0.1
 
         if load_iteration:
@@ -50,6 +52,7 @@ class Scene:
             assert False, "Could not recognize scene type!"
 
         if not self.loaded_iter:
+            points = self.save_ply(scene_info.point_cloud, args.ratio, os.path.join(self.model_path, "input.ply"))
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())
             json_cams = []
@@ -74,14 +77,18 @@ class Scene:
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
-        
+
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
                                                            "point_cloud",
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
+            points = torch.unique(points, dim=0)
+            self.gaussians.set_maxd(points, self.train_cameras, self.resolution_scales, args.dist_ratio, args.levels)
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent,self.atom_init_quantile)
+        
+
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
@@ -92,3 +99,9 @@ class Scene:
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
+    
+    def save_ply(self, pcd, ratio, path):
+        points = torch.tensor(pcd.points[::ratio]).float().cuda()
+        colors = torch.tensor(pcd.colors[::ratio]).float().cuda()
+        storePly(path, points.cpu().numpy(), colors.cpu().numpy())
+        return points

@@ -55,7 +55,9 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = False
 
-        self.atom_init_quantile = 0.01
+        self.ratio = 1  # sampling the input point cloud
+        self.dist_ratio = 0.95 # 0.999
+        self.levels = -1 # -1(adaptive) or 0 ~ 
 
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -100,9 +102,9 @@ class OptimizationParams(ParamGroup):
         self.atom_proliferation_until = 15000
         self.atom_interval = 300
 
-        self.hierachical_interval = 500
-        self.hierachical_until = 30000
         self.hierachical_depth = []
+        self.pruning_overlap_threshold = 0.00625
+        self.pruning_overlap_interval = 1000
         # self.hierachical_scaling_low = []
         
         super().__init__(parser, "Optimization Parameters")
