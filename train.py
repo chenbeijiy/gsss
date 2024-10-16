@@ -202,8 +202,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # gaussians.atomize1(levels_lod)
                     gaussians.atomize1(levels_lod)
 
-                # if iteration % opt.pruning_overlap_interval == 0:
-                #     gaussians.prune_overlap(opt.opacity_cull, opt.prune_overlap_threshold)
+                # if iteration % opt.pruning_overlap_interval == 0:   # 重叠修剪
+                #     gaussians.prune_overlap(opt.opacity_cull)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()

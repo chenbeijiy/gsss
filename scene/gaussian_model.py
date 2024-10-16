@@ -608,12 +608,13 @@ class GaussianModel:
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
-    def prune_overlap(self, min_opacity, prune_overlap_threshold):
+    def prune_overlap(self, min_opacity):
                 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
                 
         dist = torch.sqrt(distCUDA2(self._xyz)[0])
-        prune_overlap_mask = (dist < prune_overlap_threshold)
+        
+        prune_overlap_mask = (dist < torch.min(self.get_scaling,dim=1).values/1.5)
         prune_mask = torch.logical_or(prune_mask, prune_overlap_mask)
 
         print("prune_overlap number:",torch.sum(prune_mask).item())

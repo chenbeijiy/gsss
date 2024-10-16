@@ -103,8 +103,9 @@ class OptimizationParams(ParamGroup):
         self.atom_interval = 300
 
         self.hierachical_depth = []
-        self.pruning_overlap_threshold = 0.00625
-        self.pruning_overlap_interval = 1000
+
+        # self.prune_overlap_threshold = 0.0015625
+        self.pruning_overlap_interval = 3000
         # self.hierachical_scaling_low = []
         
         super().__init__(parser, "Optimization Parameters")
