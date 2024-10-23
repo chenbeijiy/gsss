@@ -57,7 +57,7 @@ class ModelParams(ParamGroup):
 
         self.use_decoupled_appearance = False   # 外观模型
 
-        self.ratio = 1  # sampling the input point cloud
+        # self.ratio = 1  
         self.dist_ratio = 0.95 # 0.999
         self.levels = -1 # -1(adaptive) or 0 
 
@@ -92,15 +92,15 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0
         self.lambda_normal = 0.05
-        self.opacity_cull = 0.05    # 0.005 atomGS
+        self.opacity_cull = 0.05    
 
         self.densification_interval = 100
-        self.opacity_reset_interval = 3000  # 300 atomGS
+        self.opacity_reset_interval = 3000  
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
 
-        self.atom_proliferation_begin = 0  # 原子化
+        self.atom_proliferation_begin = 0  
         self.atom_proliferation_until = 15000
         self.atom_interval = 300
 
@@ -115,6 +115,10 @@ class OptimizationParams(ParamGroup):
 
         self.depth_grad_thresh = 0.03
         self.depth_grad_mask_dilation = 1
+
+        self.contribution_prune_from_iter = 1000
+        self.contribution_prune_interval = 500
+        self.contribution_prune_ratio = 0.1
         
         super().__init__(parser, "Optimization Parameters")
 

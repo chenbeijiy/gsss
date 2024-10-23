@@ -549,12 +549,13 @@ class GaussianModel:
         # print("split number:",split-before)
         prune_mask = (self.get_opacity < min_opacity).squeeze()
 
-        if iteration % 1000 == 0:  # 重叠性修建
-            dist = torch.sqrt(distCUDA2(self._xyz)[0])
-            prune_overlap_mask = (dist < torch.min(self.get_scaling,dim=1).values)
-            # prune_overlap_mask1 = (dist < 0.0015625)
-            # prune_overlap_mask = torch.logical_or(prune_overlap_mask,prune_overlap_mask1)
-            prune_mask = torch.logical_or(prune_mask, prune_overlap_mask)
+        # 重叠性修建
+        # if iteration % 1000 == 0: 
+        #     dist = torch.sqrt(distCUDA2(self._xyz)[0])
+        #     prune_overlap_mask = (dist < torch.min(self.get_scaling,dim=1).values)
+        #     # prune_overlap_mask1 = (dist < 0.0015625)
+        #     # prune_overlap_mask = torch.logical_or(prune_overlap_mask,prune_overlap_mask1)
+        #     prune_mask = torch.logical_or(prune_mask, prune_overlap_mask)
 
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
@@ -572,7 +573,7 @@ class GaussianModel:
 
         self.denom[update_filter] += 1
 
-    def atomize(self, levels_lod,scene_mask):
+    def atomize(self, levels_lod):#,scene_mask):
         
         atom_scale = self.atom_scale_all[levels_lod]
         before = self._xyz.shape[0]
@@ -580,7 +581,7 @@ class GaussianModel:
         atom_mask = torch.min(self.get_scaling, dim=1).values < self.atom_scale
         atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 5
         selected_pts_mask = torch.logical_and(atom_mask,atom_mask1)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
+        # selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
 
         scaling = self.get_scaling[selected_pts_mask]
         atom_selected_scales = atom_scale[selected_pts_mask]

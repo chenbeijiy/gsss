@@ -119,7 +119,7 @@ def L1_loss_appearance(image, gt_image, gaussians, view_idx, return_transformed_
 def culling(xyz, cams, expansion=2):
     cam_centers = torch.stack([c.camera_center for c in cams], 0).to(xyz.device)
     span_x = cam_centers[:, 0].max() - cam_centers[:, 0].min()
-    span_y = cam_centers[:, 1].max() - cam_centers[:, 1].min() # smallest span
+    span_y = cam_centers[:, 1].max() - cam_centers[:, 1].min() 
     span_z = cam_centers[:, 2].max() - cam_centers[:, 2].min()
 
     scene_center = cam_centers.mean(0)
@@ -145,6 +145,25 @@ def culling(xyz, cams, expansion=2):
 
     return valid_mask, scene_center
 
+def prune_low_contribution_gaussians(gaussians, cameras, pipe, bg, K=5, prune_ratio=0.1):
+    top_list = [None, ] * K
+    for i, cam in enumerate(cameras):
+        trans = render(cam, gaussians, pipe, bg, record_transmittance=True)
+        if top_list[0] is not None:
+            m = trans > top_list[0]
+            if m.any():
+                for i in range(K - 1):
+                    top_list[K - 1 - i][m] = top_list[K - 2 - i][m]
+                top_list[0][m] = trans[m]
+        else:
+            top_list = [trans.clone() for _ in range(K)]
+
+    contribution = torch.stack(top_list, dim=-1).mean(-1)
+    tile = torch.quantile(contribution, prune_ratio)
+    prune_mask = contribution < tile
+    gaussians.prune_points(prune_mask)
+    torch.cuda.empty_cache()
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -168,8 +187,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+
     for idx, camera in enumerate(scene.getTrainCameras()):
         camera.idx = idx
+    all_cameras = scene.getTrainCameras().copy()
+
     for iteration in range(first_iter, opt.iterations + 1):        
 
         iter_start.record()
@@ -288,14 +310,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
                     # scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
                     # gaussians.densify_and_scale_split(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, opt.max_screen_size, opt.densify_scale_factor, scene_mask, N=3, no_grad=True)
-
+                    
+                    # 低贡献度修剪
+                    # if iteration > opt.contribution_prune_from_iter and iteration % opt.contribution_prune_interval == 0:
+                    #     prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
+                    #     print(f'Num gs after contribution prune: {len(gaussians.get_xyz)}')
+                        
                 # 同化
-                if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration > opt.atom_proliferation_begin: 
-                    levels_lod = compose_hlod_gaussian_for_all_views1(opt, gaussians, viewpoint_cam.camera_center)
-                    scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                    gaussians.atomize(levels_lod,scene_mask)
+                # if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration > opt.atom_proliferation_begin: 
+                #     levels_lod = compose_hlod_gaussian_for_all_views1(opt, gaussians, viewpoint_cam.camera_center)
+                #     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+                #     gaussians.atomize(levels_lod)#,scene_mask)
 
-                
+
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
                     # gaussians.reset_opacity_spike()
