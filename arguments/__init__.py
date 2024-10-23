@@ -55,9 +55,11 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = False
 
+        self.use_decoupled_appearance = False   # 外观模型
+
         self.ratio = 1  # sampling the input point cloud
         self.dist_ratio = 0.95 # 0.999
-        self.levels = -1 # -1(adaptive) or 0 ~ 
+        self.levels = -1 # -1(adaptive) or 0 
 
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -107,6 +109,12 @@ class OptimizationParams(ParamGroup):
         # self.prune_overlap_threshold = 0.0015625
         self.pruning_overlap_interval = 3000
         # self.hierachical_scaling_low = []
+
+        self.appearance_embeddings_lr = 0.001
+        self.appearance_network_lr = 0.001
+
+        self.depth_grad_thresh = 0.03
+        self.depth_grad_mask_dilation = 1
         
         super().__init__(parser, "Optimization Parameters")
 

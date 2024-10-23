@@ -397,7 +397,7 @@ renderCUDA(
 			M1 += m * w;
 			M2 += m * m * w;
 
-			if (T > 0.5f && test_T < 0.5) {
+			if (T > 0.5) {
 				median_depth = depth;
 				// median_weight = w;
 				median_contributor = contributor;

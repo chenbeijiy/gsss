@@ -433,7 +433,7 @@ renderCUDA(
 
 				const float abs_dL_dmean2D = abs(dL_dG * dG_ddelx * ddelx_dx) + abs(dL_dG * dG_ddely * ddely_dy);
             	atomicAdd(&dL_dmean2D[global_id].z, abs_dL_dmean2D);
-
+				
 				atomicAdd(&dL_dtransMat[global_id * 9 + 8],  dL_dz); // propagate depth loss
 			}
 

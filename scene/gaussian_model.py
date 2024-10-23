@@ -21,7 +21,29 @@ from utils.sh_utils import RGB2SH
 from simple_knn_C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+from scene.appearance_network import AppearanceNetwork
 
+
+class SpikingNeuron(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input, thresh):
+        out = (input >= thresh).float()
+        ctx.save_for_backward(input, out, thresh)
+        return out*input
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, out, thresh = ctx.saved_tensors
+        grad_input = grad_output.clone()
+
+        grad = grad_input * out
+        lm = 10.0
+        k = 0.1
+        grad_Vth = -lm * input * grad_input * ((k - torch.abs(input - thresh)) / k ** 2).clamp(min = 0)
+        #print(torch.sum(grad_Vth.detach()))
+        return grad, grad_Vth
+    
 class GaussianModel:
 
 
@@ -70,6 +92,16 @@ class GaussianModel:
         self.lod_scaling_ratio = 4
 
         self.setup_functions()
+
+        self.appearance_network = AppearanceNetwork(3+64, 3).cuda()
+        
+        std = 1e-4
+        self._appearance_embeddings = nn.Parameter(torch.empty(2048, 64).cuda())
+        self._appearance_embeddings.data.normal_(0, std)
+
+        # SN = SpikingNeuron.apply
+        # self.spike_neuron = SN
+        # self.Vth_opa = torch.empty(0)
 
     def capture(self):
         return (
@@ -127,8 +159,18 @@ class GaussianModel:
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
+    # def get_real_opa(self, t = 12., return_k=False):
+    #     opacity = self.spike_neuron(self.get_opacity, self.Vth_opa)
+    #     if not return_k:
+    #         return opacity
+    #     else:
+    #         return opacity, opacity
+    
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_xyz, self.get_scaling, scaling_modifier, self._rotation)
+    
+    def get_apperance_embedding(self, idx):
+        return self._appearance_embeddings[idx]
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -168,7 +210,6 @@ class GaussianModel:
 
         scales = torch.log(dist)[...,None].repeat(1, 2)
         rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
-
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
@@ -178,6 +219,8 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+        # self.Vth_opa = nn.Parameter(torch.tensor([0.001]).to(device="cuda").requires_grad_(True))
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -191,7 +234,10 @@ class GaussianModel:
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+            {'params': [self._appearance_embeddings], 'lr': training_args.appearance_embeddings_lr, "name": "appearance_embeddings"},
+            {'params': self.appearance_network.parameters(), 'lr': training_args.appearance_network_lr, "name": "appearance_network"}
+            # {'params': [self.Vth_opa], 'lr': training_args.vth_lr, "name": "Vth_opa"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -206,7 +252,21 @@ class GaussianModel:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
                 param_group['lr'] = lr
-                return lr
+            # if param_group["name"] == "Vth_opa":
+            #     reset_freq = 3000
+            #     if (iteration % reset_freq >= 0) and (iteration % reset_freq <= 300) and (iteration <= 18000):
+            #         lr = 0.0
+            #     elif (iteration <= 18000):
+            #         lr = 0.0002
+            #     elif (iteration <= 25000):
+            #         lr = 0.00014
+            #     else:
+            #         lr = 0.00005
+            #     lr *= 3
+            #     # if pipe.no_spike:
+            #     #     lr = 0
+            #     param_group['lr'] = lr
+        return lr
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
@@ -245,6 +305,15 @@ class GaussianModel:
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
+
+    # def reset_opacity_spike(self):
+    #     # _, k = self.get_real_opa(return_k=True)
+    #     opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * max((self.Vth_opa.item()), 0.003)))
+    #     if self.opacity_activation(opacities_new.max()) < self.Vth_opa:
+    #         opacities_new = opacities_new + 1e-3
+
+    #     optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+    #     self._opacity = optimizable_tensors["opacity"]
 
     def load_ply(self, path):
         plydata = PlyData.read(path)
@@ -290,6 +359,9 @@ class GaussianModel:
         self.active_sh_degree = self.max_sh_degree
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
+        # state_dict = torch.load(path +".pth")
+        # self.Vth_opa = state_dict['Vth_opa']
+
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -308,6 +380,10 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] in ["appearance_embeddings", "appearance_network"]:
+                continue
+            # if group["name"] == 'Vth_opa':
+            #   continue
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -343,6 +419,10 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] in ["appearance_embeddings", "appearance_network"]:
+                continue
+            # if group["name"] == 'Vth_opa':
+            #   continue
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group['params'][0], None)
@@ -463,17 +543,24 @@ class GaussianModel:
         
         # max_grad = min(max_grad * iteration / 7000, max_grad)      # 线性预热，帮助前期产生更多原子高斯
         # split_mask = torch.logical_and(padded_grad >= split_grad, torch.max(self.get_scaling, dim=1).values > self.atom_scale)
-        # self.atom_scale = 0.001454
         before = self._xyz.shape[0]
         self.densify_and_split(grads, max_grad, grads_abs, Q, extent)
         split = self._xyz.shape[0]
         # print("split number:",split-before)
-
         prune_mask = (self.get_opacity < min_opacity).squeeze()
+
+        if iteration % 1000 == 0:  # 重叠性修建
+            dist = torch.sqrt(distCUDA2(self._xyz)[0])
+            prune_overlap_mask = (dist < torch.min(self.get_scaling,dim=1).values)
+            # prune_overlap_mask1 = (dist < 0.0015625)
+            # prune_overlap_mask = torch.logical_or(prune_overlap_mask,prune_overlap_mask1)
+            prune_mask = torch.logical_or(prune_mask, prune_overlap_mask)
+
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
@@ -485,21 +572,7 @@ class GaussianModel:
 
         self.denom[update_filter] += 1
 
-    def atomize(self):
-        dist = self.get_scaling
-        atom_mask = torch.min(self.get_scaling, dim=1).values <= self.atom_scale
-        # atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 3
-        # atom_mask = torch.logical_and(atom_mask,atom_mask1)
-        dist[atom_mask] = self.atom_scale
-        
-        scaling_new = torch.log(dist)
-        optimizable_tensors = self.replace_tensor_to_optimizer(scaling_new, "scaling")
-        self._scaling = optimizable_tensors["scaling"]
-        # geometric progression ensures the atom scale will be optimized into 1/2 at 7k iteration
-        self.atom_scale*=0.99
-        dist[atom_mask]*=0.99
-
-    def atomize1(self, levels_lod):
+    def atomize(self, levels_lod,scene_mask):
         
         atom_scale = self.atom_scale_all[levels_lod]
         before = self._xyz.shape[0]
@@ -507,6 +580,7 @@ class GaussianModel:
         atom_mask = torch.min(self.get_scaling, dim=1).values < self.atom_scale
         atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 5
         selected_pts_mask = torch.logical_and(atom_mask,atom_mask1)
+        selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
 
         scaling = self.get_scaling[selected_pts_mask]
         atom_selected_scales = atom_scale[selected_pts_mask]
@@ -531,7 +605,7 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)     # (2 * P, 15, 3)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)   # (2 * P, 1)
 
-        # self.atom_scale*=0.99
+        self.atom_scale_all*=0.99
         # dist[atom_mask]*=0.99
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
@@ -540,7 +614,7 @@ class GaussianModel:
 
         atom_split = self._xyz.shape[0]
 
-        print("atom split number:",atom_split-before)
+        # print("atom split number:",atom_split-before)
 
         dist = self.get_scaling
         scaling_new = torch.log(dist)
@@ -608,21 +682,6 @@ class GaussianModel:
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
-    def prune_overlap(self, min_opacity):
-                
-        prune_mask = (self.get_opacity < min_opacity).squeeze()
-                
-        dist = torch.sqrt(distCUDA2(self._xyz)[0])
-        
-        prune_overlap_mask = (dist < torch.min(self.get_scaling,dim=1).values/1.5)
-        prune_mask = torch.logical_or(prune_mask, prune_overlap_mask)
-
-        print("prune_overlap number:",torch.sum(prune_mask).item())
-
-        self.prune_points(prune_mask)
-        
-        torch.cuda.empty_cache()
-
     def set_maxd(self, points, cameras, scales, dist_ratio=0.95, levels=-1):
         all_dist = torch.tensor([]).cuda()
         self.cam_infos = torch.empty(0, 4).float().cuda()
@@ -645,3 +704,13 @@ class GaussianModel:
             self.levels = torch.round(torch.log2(dist_max/dist_min)).int().item() + 1
         else:
             self.levels = levels
+
+    def spike_prune(self, min_opacity):
+        opacity = self.get_real_opa()
+        # pdf = self.get_Vth_pdf
+        
+        opacity_mask = (opacity < min_opacity).squeeze()
+        # spike_mask = torch.logical_or(opacity_mask, (pdf >= 1.5).squeeze())
+        # self.prune_points(spike_mask)
+        self.prune_points(opacity_mask)
+        torch.cuda.empty_cache()

@@ -19,6 +19,7 @@ import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
+import kornia
 from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
@@ -26,6 +27,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 
 from utils.loss_utils import edge_aware_normal_loss
 from utils.point_utils import depth_to_normal
+import torch.nn.functional as F
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -60,7 +62,6 @@ def compute_projection_scale_and_distance(lod_scaling_limit, fovx, fovy, width, 
     
     return max_distance
 
-
 def compose_hlod_gaussian_for_all_views(opt,gaussians, view, camera_center,pixel_size=1.0):
         
     scaling_ratio = gaussians.lod_scaling_ratio
@@ -92,6 +93,57 @@ def compose_hlod_gaussian_for_all_views1(opt, gaussians,camera_center,resolution
     
     return levels_lod
 
+def L1_loss_appearance(image, gt_image, gaussians, view_idx, return_transformed_image=False):
+    appearance_embedding = gaussians.get_apperance_embedding(view_idx)
+    # center crop the image
+    origH, origW = image.shape[1:]
+    H = origH // 32 * 32
+    W = origW // 32 * 32
+    left = origW // 2 - W // 2
+    top = origH // 2 - H // 2
+    crop_image = image[:, top:top+H, left:left+W]
+    crop_gt_image = gt_image[:, top:top+H, left:left+W]
+    
+    # down sample the image
+    crop_image_down = torch.nn.functional.interpolate(crop_image[None], size=(H//32, W//32), mode="bilinear", align_corners=True)[0]
+    
+    crop_image_down = torch.cat([crop_image_down, appearance_embedding[None].repeat(H//32, W//32, 1).permute(2, 0, 1)], dim=0)[None]
+    mapping_image = gaussians.appearance_network(crop_image_down)
+    transformed_image = mapping_image * crop_image
+    if not return_transformed_image:
+        return l1_loss(transformed_image, crop_gt_image)
+    else:
+        transformed_image = torch.nn.functional.interpolate(transformed_image, size=(origH, origW), mode="bilinear", align_corners=True)[0]
+        return transformed_image
+
+def culling(xyz, cams, expansion=2):
+    cam_centers = torch.stack([c.camera_center for c in cams], 0).to(xyz.device)
+    span_x = cam_centers[:, 0].max() - cam_centers[:, 0].min()
+    span_y = cam_centers[:, 1].max() - cam_centers[:, 1].min() # smallest span
+    span_z = cam_centers[:, 2].max() - cam_centers[:, 2].min()
+
+    scene_center = cam_centers.mean(0)
+
+    span_x = span_x * expansion
+    span_y = span_y * expansion
+    span_z = span_z * expansion
+
+    x_min = scene_center[0] - span_x / 2
+    x_max = scene_center[0] + span_x / 2
+
+    y_min = scene_center[1] - span_y / 2
+    y_max = scene_center[1] + span_y / 2
+
+    z_min = scene_center[2] - span_x / 2
+    z_max = scene_center[2] + span_x / 2
+
+
+    valid_mask = (xyz[:, 0] > x_min) & (xyz[:, 0] < x_max) & \
+                 (xyz[:, 1] > y_min) & (xyz[:, 1] < y_max) & \
+                 (xyz[:, 2] > z_min) & (xyz[:, 2] < z_max)
+    # print(f'scene mask ratio {valid_mask.sum().item() / valid_mask.shape[0]}')
+
+    return valid_mask, scene_center
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
@@ -116,7 +168,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-    # first_iter = 7000
+    for idx, camera in enumerate(scene.getTrainCameras()):
+        camera.idx = idx
     for iteration in range(first_iter, opt.iterations + 1):        
 
         iter_start.record()
@@ -140,8 +193,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # LOSS
         gt_image = viewpoint_cam.original_image.cuda()
 
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        if dataset.use_decoupled_appearance:
+            Ll1 = L1_loss_appearance(image, gt_image, gaussians, viewpoint_cam.idx)
+        else:
+            Ll1 = l1_loss(image, gt_image)
+        
+        #尺度loss
+        max_values, _ = torch.max(gaussians.get_scaling[:], dim=1)
+        scale_reg = 0.01
+        max_values = max_values[max_values > scale_reg]
+        lscale = torch.sum(max_values)
+        ld_scale = 0.0005
+
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) # + ld_scale * lscale
         
         # if iteration < opt.atom_proliferation_until: 
         #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
@@ -153,10 +217,38 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
+        surf_depth = render_pkg['surf_depth']
         surf_normal = render_pkg['surf_normal']
+
+        # depth_map = surf_depth[0]
+        # if opt.depth_grad_thresh > 0:
+        #     depth_map_for_grad = depth_map[None, None]
+        #     sobel_kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
+        #     sobel_kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
+
+        #     depth_map_for_grad = F.pad(depth_map_for_grad, pad=(1, 1, 1, 1), mode="replicate")
+        #     depth_grad_x = F.conv2d(depth_map_for_grad, sobel_kernel_x) / 3
+        #     depth_grad_y = F.conv2d(depth_map_for_grad, sobel_kernel_y) / 3
+        #     depth_grad_mag = torch.sqrt(depth_grad_x ** 2 + depth_grad_y ** 2)
+        #     depth_grad_weight = (depth_grad_mag < opt.depth_grad_thresh).float()
+        #     if opt.depth_grad_mask_dilation > 0:
+        #         mask_di = opt.depth_grad_mask_dilation
+        #         depth_grad_weight = -1 * F.max_pool2d(-1 * depth_grad_weight, mask_di * 2 + 1, stride=1, padding=mask_di)
+        #     depth_grad_weight = depth_grad_weight.squeeze().detach()
+        #     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0)) * depth_grad_weight
+        #     normal_error = normal_error[None]
+        # else:
+        #     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+
         normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
+
+        # smooth loss
+        # lambda_smooth = 1.0
+        # smooth_loss = kornia.losses.inverse_depth_smoothness_loss(surf_depth.unsqueeze(0), gt_image.unsqueeze(0))
+        # smooth_loss = lambda_smooth * smooth_loss
+        
 
         # loss
         total_loss = loss + dist_loss + normal_loss
@@ -179,7 +271,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     "normal": f"{ema_normal_for_log:.{5}f}",
                     "Points": f"{len(gaussians.get_xyz)}"
                 }
-                progress_bar.set_postfix(loss_dict)
+                progress_bar.set_postfix(loss_dict) 
 
                 progress_bar.update(10)
             if iteration == opt.iterations:
@@ -194,22 +286,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
+                    # scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+                    # gaussians.densify_and_scale_split(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, opt.max_screen_size, opt.densify_scale_factor, scene_mask, N=3, no_grad=True)
 
-                # iteration = 6000
+                # 同化
                 if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration > opt.atom_proliferation_begin: 
-                    # levels_lod = compose_hlod_gaussian_for_all_views(opt, gaussians, viewpoint_cam,camera_center)
                     levels_lod = compose_hlod_gaussian_for_all_views1(opt, gaussians, viewpoint_cam.camera_center)
-                    # gaussians.atomize1(levels_lod)
-                    gaussians.atomize1(levels_lod)
+                    scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+                    gaussians.atomize(levels_lod,scene_mask)
 
-                # if iteration % opt.pruning_overlap_interval == 0:   # 重叠修剪
-                #     gaussians.prune_overlap(opt.opacity_cull)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+                    # gaussians.reset_opacity_spike()
+            # else:
+            #     if iteration % opt.densification_interval == 0 or iteration == 29999:
+            #         gaussians.spike_prune(gaussians.Vth_opa.item())
  
-            # elif  iteration % opt.atom_interval == 0 and iteration <= opt.atom_proliferation_until: 
-            #         gaussians.atomize1()
 
             # Optimizer step
             if iteration < opt.iterations:
