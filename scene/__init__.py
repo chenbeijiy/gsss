@@ -31,7 +31,6 @@ class Scene:
         self.loaded_iter = None
         self.gaussians = gaussians
         self.resolution_scales = resolution_scales
-        self.atom_init_quantile = 0.1
 
         if load_iteration:
             if load_iteration == -1:
@@ -52,7 +51,7 @@ class Scene:
             assert False, "Could not recognize scene type!"
 
         if not self.loaded_iter:
-            points = self.save_ply(scene_info.point_cloud, args.ratio, os.path.join(self.model_path, "input.ply"))
+            points = self.save_ply(scene_info.point_cloud, args.ratio_ply, os.path.join(self.model_path, "input.ply"))
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())
             json_cams = []
@@ -84,9 +83,9 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
-            points = torch.unique(points, dim=0)
+            points = torch.unique(points, dim=0)   # 去除重复点
             self.gaussians.set_maxd(points, self.train_cameras, self.resolution_scales, args.dist_ratio, args.levels)
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent,self.atom_init_quantile)
+            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent,args.atom_init_quantile)
         
 
 
@@ -101,7 +100,7 @@ class Scene:
         return self.test_cameras[scale]
     
     def save_ply(self, pcd, ratio, path):
-        points = torch.tensor(pcd.points[::ratio]).float().cuda()
+        points = torch.tensor(pcd.points[::ratio]).float().cuda()  # ratio=1 表示每隔一个点取一个点 作为下采样
         colors = torch.tensor(pcd.colors[::ratio]).float().cuda()
         storePly(path, points.cpu().numpy(), colors.cpu().numpy())
         return points

@@ -46,6 +46,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         sh_degree=pc.active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
+        record_transmittance=record_transmittance,
         debug=False,
         # pipe.debug
     )
@@ -104,7 +105,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         means2D = means2D,
         shs = shs,
         colors_precomp = colors_precomp,
-        opacities = opacity,
+        opacities = opacity.float(),
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp

@@ -46,12 +46,6 @@ class SpikingNeuron(torch.autograd.Function):
     
 class GaussianModel:
 
-
-    # def setup_scaling_activation(self):
-    #     for i in range(1,4):
-    #         self.scaling_lower_bound.append(0.2 / self.lod_scaling_ratio ** (i - 1))  # 0.2 * 4**（1-lod)
-    #     self.scaling_lower_bound.append(0)
-
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(center, scaling, scaling_modifier, rotation):
             RS = build_scaling_rotation(torch.cat([scaling * scaling_modifier, torch.ones_like(scaling)], dim=-1), rotation).permute(0,2,1)
@@ -60,8 +54,6 @@ class GaussianModel:
             trans[:, 3,:3] = center
             trans[:, 3, 3] = 1
             return trans
-        
-        # self.setup_scaling_activation()
 
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -99,9 +91,6 @@ class GaussianModel:
         self._appearance_embeddings = nn.Parameter(torch.empty(2048, 64).cuda())
         self._appearance_embeddings.data.normal_(0, std)
 
-        # SN = SpikingNeuron.apply
-        # self.spike_neuron = SN
-        # self.Vth_opa = torch.empty(0)
 
     def capture(self):
         return (
@@ -197,16 +186,15 @@ class GaussianModel:
         self.atom_scale_all = torch.full((lods,),self.atom_scale,dtype=float).cuda()
         # self.scaling_limit = self.atom_scale/2
         initial_scale = self.atom_scale
+        # 每层变为上一层的一半，尺寸逐渐缩小
         for i in range(lods):
             self.atom_scale_all[i] = initial_scale
             initial_scale /= 2 
 
-        self.atom_scale_all = torch.flip(self.atom_scale_all, [0])
+        self.atom_scale_all = torch.flip(self.atom_scale_all, [0])  # 翻转
         print("atom scale_all:",self.atom_scale_all)
         
-        # dist[dist<self.atom_scale] = self.atom_scale  # 原子化
-        # self.atom_scale = 0.01 * self.spatial_lr_scale
-        # dist = torch.ones((fused_point_cloud.shape[0]), device="cuda") * self.atom_scale
+        # dist[dist<self.atom_scale] = self.atom_scale  # 初始原子化
 
         scales = torch.log(dist)[...,None].repeat(1, 2)
         rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
@@ -220,7 +208,6 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-        # self.Vth_opa = nn.Parameter(torch.tensor([0.001]).to(device="cuda").requires_grad_(True))
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -550,12 +537,11 @@ class GaussianModel:
         prune_mask = (self.get_opacity < min_opacity).squeeze()
 
         # 重叠性修建
-        # if iteration % 1000 == 0: 
-        #     dist = torch.sqrt(distCUDA2(self._xyz)[0])
-        #     prune_overlap_mask = (dist < torch.min(self.get_scaling,dim=1).values)
-        #     # prune_overlap_mask1 = (dist < 0.0015625)
-        #     # prune_overlap_mask = torch.logical_or(prune_overlap_mask,prune_overlap_mask1)
-        #     prune_mask = torch.logical_or(prune_mask, prune_overlap_mask)
+        if iteration % 1000 == 0: 
+            dist = torch.sqrt(distCUDA2(self._xyz)[0])
+            # prune_overlap_mask = (dist < torch.min(self.get_scaling,dim=1).values)
+            prune_overlap_mask = (dist < 0.0015625)
+            prune_mask = torch.logical_or(prune_mask, prune_overlap_mask)
 
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
@@ -568,46 +554,42 @@ class GaussianModel:
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
-
         self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,2:], dim=-1, keepdim=True)
 
         self.denom[update_filter] += 1
 
-    def atomize(self, levels_lod):#,scene_mask):
+    def atomize(self, levels_lod,scene_mask):
         
         atom_scale = self.atom_scale_all[levels_lod]
         before = self._xyz.shape[0]
-        N = 2
         atom_mask = torch.min(self.get_scaling, dim=1).values < self.atom_scale
-        atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 5
+        atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 8
+        N = 3
         selected_pts_mask = torch.logical_and(atom_mask,atom_mask1)
-        # selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
+        selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
 
         scaling = self.get_scaling[selected_pts_mask]
         atom_selected_scales = atom_scale[selected_pts_mask]
         atom_selected_scales = atom_selected_scales.unsqueeze(1).repeat(1, 2)
         rots = build_rotation(self._rotation[selected_pts_mask])
         dirs, max_scaling, axis = self.get_dir_max_scaling(scaling, rots)  # 获取最大轴方向
-        radii = (2 * max_scaling / 3.)[..., None] # 3 std
+        radii = (2 * atom_selected_scales[:,0].float())[..., None] # 3 std
         new_xyz1 = self.get_xyz[selected_pts_mask] + dirs * radii  # 新高斯位置均匀划分旧高斯最大尺度
-        new_xyz2 = self.get_xyz[selected_pts_mask] - dirs * radii
-        new_xyz = torch.cat((new_xyz1, new_xyz2), dim=0)
+        new_xyz2 = self.get_xyz[selected_pts_mask]
+        new_xyz3 = self.get_xyz[selected_pts_mask] - dirs * radii
+        new_xyz = torch.cat((new_xyz1, new_xyz2,new_xyz3), dim=0)
         new_scaling = scaling.detach().clone()
-        # halfatom_mask = (torch.max(scaling, dim=1).values/torch.min(scaling, dim=1).values) > 10
         new_scaling[:] = atom_selected_scales
-        # new_scaling[halfatom_mask][:,1] *= 1.5
-        # new_scaling[:] = self.atom_scale
+
         new_scaling = self.scaling_inverse_activation(new_scaling)
-        new_scaling = torch.cat((new_scaling, new_scaling), dim=0)
+        new_scaling = torch.cat((new_scaling, new_scaling,new_scaling), dim=0)
 
-        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)    # (2 * P, 4)
-
-        new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)  # (2 * P, 1, 3)
-        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)     # (2 * P, 15, 3)
-        new_opacity = self._opacity[selected_pts_mask].repeat(N,1)   # (2 * P, 1)
+        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)    
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)  
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)     
+        new_opacity = self._opacity[selected_pts_mask].repeat(N,1)  
 
         self.atom_scale_all*=0.99
-        # dist[atom_mask]*=0.99
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
@@ -694,6 +676,8 @@ class GaussianModel:
                 dist = torch.sqrt(torch.sum((points - cam_center)**2, dim=1))
                 dist_max = torch.quantile(dist, dist_ratio)  
                 dist_min = torch.quantile(dist, 1 - dist_ratio)
+                cam.max_dist = dist_max
+                cam.min_dist = dist_min
                 new_dist = torch.tensor([dist_min, dist_max]).float().cuda()
                 new_dist = new_dist * scale
                 all_dist = torch.cat((all_dist, new_dist), dim=0)
@@ -705,13 +689,3 @@ class GaussianModel:
             self.levels = torch.round(torch.log2(dist_max/dist_min)).int().item() + 1
         else:
             self.levels = levels
-
-    def spike_prune(self, min_opacity):
-        opacity = self.get_real_opa()
-        # pdf = self.get_Vth_pdf
-        
-        opacity_mask = (opacity < min_opacity).squeeze()
-        # spike_mask = torch.logical_or(opacity_mask, (pdf >= 1.5).squeeze())
-        # self.prune_points(spike_mask)
-        self.prune_points(opacity_mask)
-        torch.cuda.empty_cache()

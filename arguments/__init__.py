@@ -54,10 +54,13 @@ class ModelParams(ParamGroup):
         self._white_background = False
         self.data_device = "cuda"
         self.eval = False
+        self.resolution_scales = [1.0]
+        
+        self.atom_init_quantile = 0.3
 
         self.use_decoupled_appearance = False   # 外观模型
 
-        # self.ratio = 1  
+        self.ratio_ply = 1  
         self.dist_ratio = 0.95 # 0.999
         self.levels = -1 # -1(adaptive) or 0 
 
@@ -100,9 +103,9 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
 
-        self.atom_proliferation_begin = 0  
+        self.atom_proliferation_begin = 1000  
         self.atom_proliferation_until = 15000
-        self.atom_interval = 300
+        self.atom_interval = 200
 
         self.hierachical_depth = []
 

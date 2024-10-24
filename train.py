@@ -35,59 +35,10 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def compute_projection_scale_and_distance(lod_scaling_limit, fovx, fovy, width, height, pixel_size=1.0):
-    """
-    Calculate the distance at which the smallest Gaussian scale appears as one pixel.
-    
-    Args:
-    - scale (torch.Tensor): The scale of the Gaussian in 3D space, assumed to be in the same unit as the focal length.
-    - fovx (float): Horizontal field of view in radians.
-    - fovy (float): Vertical field of view in radians.
-    - width (int): Width of the image in pixels.
-    - height (int): Height of the image in pixels.
-    - pixel_size (float): The size of a pixel in the same unit as the focal length. Typically set to 1.0 for unit consistency in image processing. (= screensize)
-
-    Returns:
-    - float: The maximum distance where the smallest dimension appears as one pixel.
-    """
+def compose_levels_gaussian_for_current_views(opt, gaussians,camera,resolution_scale=[1.0]):
         
-    # Compute the focal lengths from field of view
-    focal_length_x = width / (2.0 * math.tan(fovx / 2.0))
-    focal_length_y = height / (2.0 * math.tan(fovy / 2.0))
-
-    # Use the smaller of the two focal lengths to ensure visibility in both dimensions
-    focal_length = min(focal_length_x, focal_length_y)
-    # calculate the distance where the 2D projection of the scale constraint equals the predefined screensize threshold (Sec 4.4 eq.6)
-    max_distance = focal_length * lod_scaling_limit / pixel_size
-    
-    return max_distance
-
-def compose_hlod_gaussian_for_all_views(opt,gaussians, view, camera_center,pixel_size=1.0):
-        
-    scaling_ratio = gaussians.lod_scaling_ratio
-    
-    # lod_scaling_limit = gaussians.lod_scaling_limit
-    lod_scaling_limit = 0.003125
-    lod_max_dist_upper_bound = compute_projection_scale_and_distance(lod_scaling_limit, view.FoVx, view.FoVy, view.image_width, view.image_height, pixel_size=pixel_size)
-    for i in range(1,4):
-        opt.hierachical_depth.append(lod_max_dist_upper_bound)
-        lod_max_dist_upper_bound *= scaling_ratio
-    
-    dists_lod = torch.sqrt(((gaussians.get_xyz - camera_center)**2).sum(dim=1))  # 即为点到相机中心点距离
-
-    levels_lod = torch.where(dists_lod < opt.hierachical_depth[0], 0,  # 区间 1
-               torch.where(dists_lod < opt.hierachical_depth[1], 1,  # 区间 2
-               torch.where(dists_lod < opt.hierachical_depth[2], 2,  # 区间 3
-               3)))  # 区间 4
-    
-    return levels_lod
-
-def compose_hlod_gaussian_for_all_views1(opt, gaussians,camera_center,resolution_scale=[1.0]):
-        
-    dists_lod = torch.sqrt(((gaussians.get_xyz - camera_center)**2).sum(dim=1))  # 即为点到相机距离
-    opt.hierachical_depth = torch.linspace(gaussians.min_dist,gaussians.max_dist,max(gaussians.levels,3)).cuda()
-    # pred_level = torch.log2(gaussians.standard_dist/dists_lod)
-    # pred_level = torch.min(torch.max(pred_level,0),gaussians.levels)
+    dists_lod = torch.sqrt(((gaussians.get_xyz - camera.camera_center)**2).sum(dim=1)) * camera.resolution_scale  # 计算点到相机距离
+    opt.hierachical_depth = torch.linspace(camera.min_dist,camera.max_dist,max(gaussians.levels,3)).cuda()
 
     levels_lod = torch.searchsorted(opt.hierachical_depth, dists_lod, right=True)
     
@@ -168,7 +119,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians,resolution_scales=dataset.resolution_scales)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -215,21 +166,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # LOSS
         gt_image = viewpoint_cam.original_image.cuda()
 
-        if dataset.use_decoupled_appearance:
-            Ll1 = L1_loss_appearance(image, gt_image, gaussians, viewpoint_cam.idx)
+        if dataset.use_decoupled_appearance:  # L1损失中加入外观模型
+            Ll1 = L1_loss_appearance(image, gt_image, gaussians, viewpoint_cam.idx)  
         else:
             Ll1 = l1_loss(image, gt_image)
         
-        #尺度loss
-        max_values, _ = torch.max(gaussians.get_scaling[:], dim=1)
-        scale_reg = 0.01
-        max_values = max_values[max_values > scale_reg]
-        lscale = torch.sum(max_values)
-        ld_scale = 0.0005
+        # 尺度loss
+        # max_values, _ = torch.max(gaussians.get_scaling[:], dim=1)
+        # scale_reg = 0.01
+        # max_values = max_values[max_values > scale_reg]
+        # lscale = torch.sum(max_values)
+        # ld_scale = 0.0005
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) # + ld_scale * lscale
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
-        # if iteration < opt.atom_proliferation_until: 
+        # 曲率梯度loss
+        # if iteration < opt.atom_proliferation_until:
         #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
         #     loss += opt.lambda_normal * Lnormal   # lambda = 0.1
 
@@ -242,6 +194,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         surf_depth = render_pkg['surf_depth']
         surf_normal = render_pkg['surf_normal']
 
+        # 法线一致性损失中加入曲率作为权重
         # depth_map = surf_depth[0]
         # if opt.depth_grad_thresh > 0:
         #     depth_map_for_grad = depth_map[None, None]
@@ -266,7 +219,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
 
-        # smooth loss
+        # smooth loss 来自kornia的深度图平滑损失
         # lambda_smooth = 1.0
         # smooth_loss = kornia.losses.inverse_depth_smoothness_loss(surf_depth.unsqueeze(0), gt_image.unsqueeze(0))
         # smooth_loss = lambda_smooth * smooth_loss
@@ -300,7 +253,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Densification
-            # iteration = 15000
             if iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -309,31 +261,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
                     # scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                    # gaussians.densify_and_scale_split(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, opt.max_screen_size, opt.densify_scale_factor, scene_mask, N=3, no_grad=True)
                     
-                    # 低贡献度修剪
+                    # 去除低贡献度高斯
                     # if iteration > opt.contribution_prune_from_iter and iteration % opt.contribution_prune_interval == 0:
                     #     prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
-                    #     print(f'Num gs after contribution prune: {len(gaussians.get_xyz)}')
                         
                 # 同化
-                # if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration > opt.atom_proliferation_begin: 
-                #     levels_lod = compose_hlod_gaussian_for_all_views1(opt, gaussians, viewpoint_cam.camera_center)
-                #     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                #     gaussians.atomize(levels_lod)#,scene_mask)
+                if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration > opt.atom_proliferation_begin: 
+                    levels_lod = compose_levels_gaussian_for_current_views(opt, gaussians, viewpoint_cam)
+                    scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+                    gaussians.atomize(levels_lod,scene_mask)
 
 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
-                    # gaussians.reset_opacity_spike()
-            # else:
+            # else:  # 15000次迭代后是否需要措施（修剪？致密化？）
             #     if iteration % opt.densification_interval == 0 or iteration == 29999:
             #         gaussians.spike_prune(gaussians.Vth_opa.item())
  
 
             # Optimizer step
             if iteration < opt.iterations:
-            # if iteration < 7000:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
