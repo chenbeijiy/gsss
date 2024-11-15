@@ -384,6 +384,7 @@ renderCUDA(
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	float* __restrict__ out_others,
+	float* __restrict__ invdepth,
 	float* __restrict__ transmittance,
 	int* __restrict__ num_covered_pixels,
 	bool record_transmittance)
@@ -420,6 +421,8 @@ renderCUDA(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+
+	float expected_invdepth = 0.0f;
 
 
 #if RENDER_AXUTILITY
@@ -530,6 +533,10 @@ renderCUDA(
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
+
+			if(invdepth)
+				expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
+
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -546,6 +553,9 @@ renderCUDA(
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+
+		if (invdepth)
+		invdepth[pix_id] = expected_invdepth;// 1. / (expected_depth + T * 1e3);
 
 #if RENDER_AXUTILITY
 		n_contrib[pix_id + H * W] = median_contributor;
@@ -578,6 +588,7 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color,
 	float* out_others,
+	float* depth,
 	float* transmittance,
 	int* num_covered_pixels,
 	bool record_transmittance)
@@ -597,6 +608,7 @@ void FORWARD::render(
 		bg_color,
 		out_color,
 		out_others,
+		depth,
 		transmittance,
 		num_covered_pixels,
 		record_transmittance);

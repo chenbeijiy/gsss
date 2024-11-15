@@ -217,6 +217,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const bool prefiltered,
 	float* out_color,
 	float* out_others,
+	float* depth,
 	float* transmittance,
 	int* num_covered_pixels,
 	bool record_transmittance,
@@ -340,6 +341,7 @@ int CudaRasterizer::Rasterizer::forward(
 		background,
 		out_color,
 		out_others,
+		depth,
 		transmittance,
 		num_covered_pixels,
 		record_transmittance), debug)
@@ -507,10 +509,12 @@ void CudaRasterizer::Rasterizer::backward(
 	char* img_buffer,
 	const float* dL_dpix,
 	const float* dL_depths,
+	const float* dL_invdepths,
 	float* dL_dmean2D,
 	float* dL_dnormal,
 	float* dL_dopacity,
 	float* dL_dcolor,
+	float* dL_dinvdepth,
 	float* dL_dmean3D,
 	float* dL_dtransMat,
 	float* dL_dsh,
@@ -556,11 +560,13 @@ void CudaRasterizer::Rasterizer::backward(
 		imgState.n_contrib,
 		dL_dpix,
 		dL_depths,
+		dL_invdepths,
 		dL_dtransMat,
 		(float3*)dL_dmean2D,
 		dL_dnormal,
 		dL_dopacity,
-		dL_dcolor), debug)
+		dL_dcolor,
+		dL_dinvdepth), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
@@ -584,6 +590,7 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dnormal,		     // gradient inputs
 		dL_dtransMat,
 		dL_dcolor,
+		dL_dinvdepth,
 		dL_dsh,
 		(glm::vec3*)dL_dmean3D,
 		(glm::vec2*)dL_dscale,

@@ -117,7 +117,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         transmittance = transmittance_sum / (num_covered_pixels + 1e-6)
         return transmittance
     else:
-        rendered_image, radii, allmap = output
+        rendered_image, radii, allmap, invdepth = output
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
@@ -125,6 +125,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "viewspace_points": means2D,
             "visibility_filter" : radii > 0,
             "radii": radii,
+            "invdepth" : invdepth
     }
 
 

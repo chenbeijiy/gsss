@@ -66,6 +66,7 @@ namespace FORWARD
 		const float* bg_color,
 		float* out_color,
 		float* out_others,
+		float* depth,
 		float* transmittance,
 		int* num_covered_pixels,
 		bool record_transmittance);

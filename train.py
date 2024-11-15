@@ -336,30 +336,30 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
                         
                 # # 同化
-                if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration >= opt.atom_proliferation_begin: 
-                    scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                    # 分裂大高斯
-                    # gaussians.densify_and_scale_split(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, opt.densify_scale_factor, scene_mask, N=2, no_grad=True)
-                    visi = None
-                    levels_lod = compose_levels_gaussian_for_current_views(opt, gaussians, viewpoint_cam)
-                    visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
-                    gaussians.atomize(levels_lod,scene_mask,visi)
+                # if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration >= opt.atom_proliferation_begin: 
+                #     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+                #     # 分裂大高斯
+                #     # gaussians.densify_and_scale_split(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, opt.densify_scale_factor, scene_mask, N=2, no_grad=True)
+                #     visi = None
+                #     levels_lod = compose_levels_gaussian_for_current_views(opt, gaussians, viewpoint_cam)
+                #     visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
+                #     gaussians.atomize(levels_lod,scene_mask,visi)
 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
-            else:  # 15000次迭代后是否需要措施（修剪？致密化？）
-                if iteration % 1000 == 0 and iteration <= 25000:
-                    scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                    visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
-                    gaussians.atomize_last(scene_mask, visi)
-                # remove low opacity gs
-                if args.prune_lower_opactity and iteration % opt.densification_interval == 0:
-                    gaussians.prune(1/255,scene.cameras_extent)
+            # else:  # 15000次迭代后是否需要措施（修剪？致密化？）
+            #     if iteration % 1000 == 0 and iteration <= 25000:
+            #         scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+            #         visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
+            #         gaussians.atomize_last(scene_mask, visi)
+            #     # remove low opacity gs
+            #     if args.prune_lower_opactity and iteration % opt.densification_interval == 0:
+            #         gaussians.prune(1/255,scene.cameras_extent)
 
             # 去除低贡献度高斯
-            if iteration <= opt.iterations and iteration % opt.contribution_prune_interval == 0:
-                prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
+            # if iteration <= opt.iterations and iteration % opt.contribution_prune_interval == 0:
+            #     prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
  
             # Optimizer step 
             if iteration < opt.iterations:

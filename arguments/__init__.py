@@ -65,6 +65,7 @@ class ModelParams(ParamGroup):
         self.levels = -1 # -1(adaptive) or 0 
 
         self._depths = ""
+        self.train_test_exp = False
 
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
         super().__init__(parser, "Loading Parameters", sentinel)

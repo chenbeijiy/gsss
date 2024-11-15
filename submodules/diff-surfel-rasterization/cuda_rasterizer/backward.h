@@ -36,11 +36,13 @@ namespace BACKWARD
 		const uint32_t* n_contrib,
 		const float* dL_dpixels,
 		const float* dL_depths,
+		const float* dL_invdepths,
 		float * dL_dtransMat,
 		float3* dL_dmean2D,
 		float* dL_dnormal3D,
 		float* dL_dopacity,
-		float* dL_dcolors);
+		float* dL_dcolors,
+		float* dL_dinvdepths);
 
 	void preprocess(
 		int P, int D, int M,
@@ -61,6 +63,7 @@ namespace BACKWARD
 		const float* dL_dnormal3D,
 		float* dL_dtransMat,
 		float* dL_dcolor,
+		const float* dL_dinvdepth,
 		float* dL_dsh,
 		glm::vec3* dL_dmeans,
 		glm::vec2* dL_dscale,
