@@ -100,3 +100,10 @@ def edge_aware_normal_loss(I, N):
     loss = (loss_x + loss_y).norm(dim=0, keepdim=True)
     return loss.mean()
 
+def compute_mutual_axis_loss(scaling):
+    min_values = torch.min(scaling, dim=1).values
+    max_values = torch.max(scaling, dim=1).values
+    t = min_values / max_values
+    k = 3
+    loss = torch.exp(k * (t + 1/t - 2 + 1e-6) - 1)
+    return loss

@@ -64,6 +64,8 @@ class ModelParams(ParamGroup):
         self.dist_ratio = 0.95 # 0.999
         self.levels = -1 # -1(adaptive) or 0 
 
+        self._depths = ""
+
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
         super().__init__(parser, "Loading Parameters", sentinel)
 
@@ -121,7 +123,10 @@ class OptimizationParams(ParamGroup):
         self.contribution_prune_interval = 1000
         self.contribution_prune_ratio = 0.05
 
-        self.sample_cams_num = 35
+        self.sample_cams_num = 30
+
+        self.depth_l1_weight_init = 0.5
+        self.depth_l1_weight_final = 0.005
         
         super().__init__(parser, "Optimization Parameters")
 

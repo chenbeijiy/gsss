@@ -17,7 +17,7 @@ from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui, visi_acc_render
 import sys
 from scene import Scene, GaussianModel
-from utils.general_utils import safe_state
+from utils.general_utils import safe_state , get_expon_lr_func
 import uuid
 import kornia
 from tqdm import tqdm
@@ -25,7 +25,7 @@ from utils.image_utils import psnr, render_net_image, normal2curv, get_edge_awar
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
-from utils.loss_utils import edge_aware_normal_loss
+from utils.loss_utils import edge_aware_normal_loss, compute_mutual_axis_loss
 from utils.point_utils import depth_to_normal
 import torch.nn.functional as F
 
@@ -112,6 +112,8 @@ def prune_low_contribution_gaussians(gaussians, cameras, pipe, bg, K=5, prune_ra
     contribution = torch.stack(top_list, dim=-1).mean(-1)
     tile = torch.quantile(contribution, prune_ratio)
     prune_mask = contribution < tile
+    # 50% 
+    # mask[mask.clone()] = self.get_opacity[mask].squeeze() < self.get_opacity[mask].median()
     gaussians.prune_points(prune_mask)
     torch.cuda.empty_cache()
 
@@ -243,39 +245,59 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # curv_loss = 0.005 * loss_curv
 
         # 法线一致性损失中加入曲率作为权重
-        depth_map = surf_depth[0]
-        if opt.depth_grad_thresh > 0:
-            depth_map_for_grad = depth_map[None, None]
-            sobel_kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
-            sobel_kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
+        # depth_map = surf_depth[0]
+        # if opt.depth_grad_thresh > 0:
+        #     depth_map_for_grad = depth_map[None, None]
+        #     sobel_kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
+        #     sobel_kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
 
-            depth_map_for_grad = F.pad(depth_map_for_grad, pad=(1, 1, 1, 1), mode="replicate")
-            depth_grad_x = F.conv2d(depth_map_for_grad, sobel_kernel_x) / 3
-            depth_grad_y = F.conv2d(depth_map_for_grad, sobel_kernel_y) / 3
-            depth_grad_mag = torch.sqrt(depth_grad_x ** 2 + depth_grad_y ** 2)
-            depth_grad_weight = (depth_grad_mag < opt.depth_grad_thresh).float()
-            if opt.depth_grad_mask_dilation > 0:
-                mask_di = opt.depth_grad_mask_dilation
-                depth_grad_weight = -1 * F.max_pool2d(-1 * depth_grad_weight, mask_di * 2 + 1, stride=1, padding=mask_di)
-            depth_grad_weight = depth_grad_weight.squeeze().detach()
-            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0)) * depth_grad_weight
-            normal_error = normal_error[None]
-        else:
-            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+        #     depth_map_for_grad = F.pad(depth_map_for_grad, pad=(1, 1, 1, 1), mode="replicate")
+        #     depth_grad_x = F.conv2d(depth_map_for_grad, sobel_kernel_x) / 3
+        #     depth_grad_y = F.conv2d(depth_map_for_grad, sobel_kernel_y) / 3
+        #     depth_grad_mag = torch.sqrt(depth_grad_x ** 2 + depth_grad_y ** 2)
+        #     depth_grad_weight = (depth_grad_mag < opt.depth_grad_thresh).float()
+        #     if opt.depth_grad_mask_dilation > 0:
+        #         mask_di = opt.depth_grad_mask_dilation
+        #         depth_grad_weight = -1 * F.max_pool2d(-1 * depth_grad_weight, mask_di * 2 + 1, stride=1, padding=mask_di)
+        #     depth_grad_weight = depth_grad_weight.squeeze().detach()
+        #     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0)) * depth_grad_weight
+        #     normal_error = normal_error[None]
+        # else:
+        #     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
 
-        # normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
         normal_loss = lambda_normal * (normal_error).mean()
         # 随图像梯度调整深度失真项
-        rend_dist = get_edge_aware_distortion_map(gt_image,rend_dist)
+        # rend_dist = get_edge_aware_distortion_map(gt_image,rend_dist)
         dist_loss = lambda_dist * (rend_dist).mean()
 
         # smooth loss 来自kornia的深度图平滑损失
-        lambda_smooth = 1.0
-        smooth_loss = kornia.losses.inverse_depth_smoothness_loss(surf_depth.unsqueeze(0), gt_image.unsqueeze(0))
-        smooth_loss = lambda_smooth * smooth_loss
-        
+        # lambda_smooth = 1.0
+        # smooth_loss = kornia.losses.inverse_depth_smoothness_loss(surf_depth.unsqueeze(0), gt_image.unsqueeze(0))
+        # smooth_loss = lambda_smooth * smooth_loss
+
+        # Depth regularization
+        Ll1depth_pure = 0.0
+        depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
+        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
+            invDepth = render_pkg["invdepth"]
+            mono_invdepth = viewpoint_cam.invdepthmap.cuda()
+            depth_mask = viewpoint_cam.depth_mask.cuda()
+
+            Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
+            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
+            loss += Ll1depth
+            Ll1depth = Ll1depth.item()
+        else:
+            Ll1depth = 0
+
+        # mutual axis loss
+        lambda_mutaxis = 0.001
+        mutaxis_loss = compute_mutual_axis_loss(gaussians.get_scaling)
+        mutaxis_loss *= lambda_mutaxis
+
         # loss
-        total_loss = loss + dist_loss + normal_loss + smooth_loss
+        total_loss = loss + dist_loss + normal_loss
         
         total_loss.backward()
 
@@ -331,11 +353,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
                     visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
                     gaussians.atomize_last(scene_mask, visi)
-                # 去除低贡献度高斯
-                if iteration <= 25000 and iteration % opt.contribution_prune_interval == 0:
-                    prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
+                # remove low opacity gs
+                if args.prune_lower_opactity and iteration % opt.densification_interval == 0:
+                    gaussians.prune(1/255,scene.cameras_extent)
+
+            # 去除低贡献度高斯
+            if iteration <= opt.iterations and iteration % opt.contribution_prune_interval == 0:
+                prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
  
-            # Optimizer step
+            # Optimizer step 
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
