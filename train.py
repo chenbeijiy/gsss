@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 try:
     from torch.utils.tensorboard import SummaryWriter
-    TENSORBOARD_FOUND = True
+    TENSORBOARD_FOUND = False
 except ImportError:
     TENSORBOARD_FOUND = False
 
@@ -192,7 +192,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
 
-        camera_center = torch.stack([view.camera_center for view in viewpoint_stack]).mean(dim=0)
+        # camera_center = torch.stack([view.camera_center for view in viewpoint_stack]).mean(dim=0)
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
@@ -206,23 +206,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             Ll1 = l1_loss(image, gt_image)
         
-        # 尺度loss
-        # min_scale, _ = torch.min(gaussians.get_scaling, dim=1)
-        # min_scale = torch.clamp(min_scale, 0, 30)
-        # # scale_reg = 0.01
-        # # max_values = max_values[max_values > scale_reg]
-        # lscale = torch.abs(min_scale-gaussians.atom_scale/2).mean()
-        # ld_scale = 0.005
-
-        # 不透明度损失loss
-        # opac_ = gaussians.get_opacity - 0.5
-        # opac_mask = torch.gt(opac_, 0.01) * torch.le(opac_, 0.99)
-        # loss_opac = torch.exp(-(opac_ * opac_) * 20)
-        # loss_opac = (loss_opac * opac_mask).mean()
-        # opac_mask = (gaussian_list==0)
-        # opac_ = gaussians.get_opacity
-        # loss_opac = opac_[opac_mask].mean()
-
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
         # regularization
@@ -235,7 +218,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         surf_depth = render_pkg['surf_depth']
         surf_normal = render_pkg['surf_normal']
 
-        # 曲率梯度loss  n时间与高斯数量作为代价 小提升
+        # 曲率梯度loss  时间与高斯数量作为代价 有提升
         # if iteration < opt.atom_proliferation_until:
         #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
         #     loss += opt.lambda_normal * Lnormal   # lambda = 0.1
@@ -244,7 +227,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # loss_curv = l1_loss(curv_n * 1, 0)
         # curv_loss = 0.005 * loss_curv
 
-        # 法线一致性损失中加入曲率作为权重
+        # 法线一致性损失中加入曲率作为权重  暂定无用
         # depth_map = surf_depth[0]
         # if opt.depth_grad_thresh > 0:
         #     depth_map_for_grad = depth_map[None, None]
@@ -267,14 +250,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
         normal_loss = lambda_normal * (normal_error).mean()
-        # 随图像梯度调整深度失真项
-        # rend_dist = get_edge_aware_distortion_map(gt_image,rend_dist)
+        # 随图像梯度调整深度失真项 暂定有用
+        rend_dist = get_edge_aware_distortion_map(gt_image,rend_dist)
         dist_loss = lambda_dist * (rend_dist).mean()
-
-        # smooth loss 来自kornia的深度图平滑损失
-        # lambda_smooth = 1.0
-        # smooth_loss = kornia.losses.inverse_depth_smoothness_loss(surf_depth.unsqueeze(0), gt_image.unsqueeze(0))
-        # smooth_loss = lambda_smooth * smooth_loss
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -292,9 +270,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             Ll1depth = 0
 
         # mutual axis loss
-        lambda_mutaxis = 0.001
-        mutaxis_loss = compute_mutual_axis_loss(gaussians.get_scaling)
-        mutaxis_loss *= lambda_mutaxis
+        # lambda_mutaxis = 0.001
+        # mutaxis_loss = compute_mutual_axis_loss(gaussians.get_scaling)
+        # mutaxis_loss *= lambda_mutaxis
 
         # loss
         total_loss = loss + dist_loss + normal_loss
@@ -322,10 +300,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration == opt.iterations:
                 progress_bar.close()
 
-            # if iteration > opt.densify_from_iter:
-            #     # opt.densify_until_iter = opt.iterations
-            #     gaussians.opacity_decay(factor=0.999)
-
             # Densification
             if iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
@@ -334,28 +308,29 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None 
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
+                
+                # 不透明度衰减 有用
+                if iteration % opt.opacity_reduce_interval == 0 and opt.use_reduce:
+                    gaussians.reduce_opacity()
                         
-                # # 同化
-                # if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration >= opt.atom_proliferation_begin: 
-                #     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                #     # 分裂大高斯
-                #     # gaussians.densify_and_scale_split(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, opt.densify_scale_factor, scene_mask, N=2, no_grad=True)
-                #     visi = None
-                #     levels_lod = compose_levels_gaussian_for_current_views(opt, gaussians, viewpoint_cam)
-                #     visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
-                #     gaussians.atomize(levels_lod,scene_mask,visi)
+                # 同化
+                if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration >= opt.atom_proliferation_begin: 
+                    scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+                    # 分裂大高斯
+                    # gaussians.densify_and_scale_split(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, opt.densify_scale_factor, scene_mask, N=2, no_grad=True)
+                    visi = None
+                    levels_lod = compose_levels_gaussian_for_current_views(opt, gaussians, viewpoint_cam)
+                    visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
+                    gaussians.atomize(levels_lod,scene_mask,visi)
 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
             # else:  # 15000次迭代后是否需要措施（修剪？致密化？）
-            #     if iteration % 1000 == 0 and iteration <= 25000:
-            #         scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-            #         visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
-            #         gaussians.atomize_last(scene_mask, visi)
-            #     # remove low opacity gs
-            #     if args.prune_lower_opactity and iteration % opt.densification_interval == 0:
-            #         gaussians.prune(1/255,scene.cameras_extent)
+                # if iteration % 1000 == 0 and iteration <= 25000:
+                #     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+                #     visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
+                #     gaussians.atomize_last(scene_mask, visi)
 
             # 去除低贡献度高斯
             # if iteration <= opt.iterations and iteration % opt.contribution_prune_interval == 0:
