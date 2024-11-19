@@ -450,7 +450,7 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
         
-        # selected_pts_mask = torch.logical_and(selected_pts_mask, ~long_mask)
+        selected_pts_mask = torch.logical_and(selected_pts_mask, ~long_mask)
         
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.atom_scale)
@@ -519,13 +519,13 @@ class GaussianModel:
         long_mask = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) > 6
         self.densify_and_clone(grads, max_grad, grads_abs, Q, extent, long_mask)
         clone = self._xyz.shape[0]
-        # print("clone number:",clone-before)
+        print("clone number:",clone-before)
         
         before = self._xyz.shape[0]
         long_mask = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) > 6
         self.densify_and_split(grads, max_grad, grads_abs, Q, extent, long_mask)
         split = self._xyz.shape[0]
-        # print("split number:",split-before)
+        print("split number:",split-before)
         prune_mask = (self.get_opacity < min_opacity).squeeze()
 
         # 重叠性修建 对cd损耗太多
