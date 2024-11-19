@@ -434,7 +434,7 @@ class GaussianModel:
         inside, pts = get_inside_normalized(self.get_xyz, self.trans, self.scale)
         return inside, pts
     
-    def densify_and_split(self, grads, grad_threshold,  grads_abs, grad_abs_threshold, scene_extent, N=2):
+    def densify_and_split(self, grads, grad_threshold,  grads_abs, grad_abs_threshold, scene_extent, long_mask, N=2):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -449,6 +449,8 @@ class GaussianModel:
 
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+        
+        # selected_pts_mask = torch.logical_and(selected_pts_mask, ~long_mask)
         
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.atom_scale)
@@ -476,12 +478,14 @@ class GaussianModel:
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
-    def densify_and_clone(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent):
+    def densify_and_clone(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent, long_mask):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask_abs = torch.where(torch.norm(grads_abs, dim=-1) >= grad_abs_threshold, True, False)
 
         selected_pts_mask = torch.logical_or(selected_pts_mask, selected_pts_mask_abs)
+
+        selected_pts_mask = torch.logical_and(selected_pts_mask, ~long_mask)
 
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
@@ -512,12 +516,14 @@ class GaussianModel:
         Q = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
 
         before = self._xyz.shape[0]
-        self.densify_and_clone(grads, max_grad, grads_abs, Q, extent)
+        long_mask = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) > 6
+        self.densify_and_clone(grads, max_grad, grads_abs, Q, extent, long_mask)
         clone = self._xyz.shape[0]
         # print("clone number:",clone-before)
         
         before = self._xyz.shape[0]
-        self.densify_and_split(grads, max_grad, grads_abs, Q, extent)
+        long_mask = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) > 6
+        self.densify_and_split(grads, max_grad, grads_abs, Q, extent, long_mask)
         split = self._xyz.shape[0]
         # print("split number:",split-before)
         prune_mask = (self.get_opacity < min_opacity).squeeze()
@@ -586,10 +592,10 @@ class GaussianModel:
 
         print("atom split number:",atom_split-before)
 
-        dist = self.get_scaling
-        scaling_new = torch.log(dist)
-        optimizable_tensors = self.replace_tensor_to_optimizer(scaling_new, "scaling")
-        self._scaling = optimizable_tensors["scaling"]
+        # dist = self.get_scaling
+        # scaling_new = torch.log(dist)
+        # optimizable_tensors = self.replace_tensor_to_optimizer(scaling_new, "scaling")
+        # self._scaling = optimizable_tensors["scaling"]
 
     def get_dir_max_scaling(self, scaling, rots):
         '''
@@ -628,7 +634,7 @@ class GaussianModel:
 
     def atomize_last(self, scene_mask, visi):
         
-        atom_scale = self.atom_scale_all[-1]
+        atom_scale = self.atom_scale_all[-2]
         atom_mask = torch.min(self.get_scaling, dim=1).values < atom_scale
         # atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 6
         selected_pts_mask = torch.logical_and(atom_mask,atom_mask)

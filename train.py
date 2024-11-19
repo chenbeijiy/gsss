@@ -222,13 +222,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         surf_depth = render_pkg['surf_depth']
         surf_normal = render_pkg['surf_normal']
 
-        # curv loss1  系数越大会增长点的数量，来自atom 建议修改
-        Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
-        loss += 0.01 * Lnormal 
+        # curv loss1  系数越大会增长点的数量且略微增加时间，来自atom 建议修改
+        if dataset.use_curv:
+            Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
+            loss += 0.01 * Lnormal 
 
         # 法线一致性损失中加入曲率作为权重 （暂定无用）
-        depth_map = surf_depth[0]
         if opt.use_depth_grad and opt.depth_grad_thresh > 0:
+            depth_map = surf_depth[0]
             depth_map_for_grad = depth_map[None, None]
             sobel_kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
             sobel_kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
@@ -255,13 +256,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         dist_loss = lambda_dist * (rend_dist).mean()
 
         # 不透明度loss1 无用
-        # opac_ = gaussians.get_opacity
-        # opac_mask0 = torch.gt(opac_, 0.01) * torch.le(opac_, 0.5)
-        # opac_mask1 = torch.gt(opac_, 0.5) * torch.le(opac_, 0.99)
-        # opac_mask = opac_mask0 * 0.01 + opac_mask1
-        # loss_opac = (torch.exp(-(opac_ - 0.5)**2 * 20) * opac_mask).mean()
-        # lambda_opac = 0.001
-        # loss_opac = lambda_opac * loss_opac
+        if dataset.use_opac:
+            opac_ = gaussians.get_opacity
+            opac_mask0 = torch.gt(opac_, 0.01) * torch.le(opac_, 0.5)
+            opac_mask1 = torch.gt(opac_, 0.5) * torch.le(opac_, 0.99)
+            opac_mask = opac_mask0 * 0.01 + opac_mask1
+            loss_opac = (torch.exp(-(opac_ - 0.5)**2 * 20) * opac_mask).mean()
+            lambda_opac = 0.001
+            loss_opac = lambda_opac * loss_opac
+            loss += loss_opac
 
         # mutual axis loss
         # lambda_mutaxis = 0.001

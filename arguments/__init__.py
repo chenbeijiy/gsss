@@ -60,6 +60,8 @@ class ModelParams(ParamGroup):
 
         self.use_decoupled_appearance = False   # 外观模型
         self.use_edge_L1 = False
+        self.use_curv = False
+        self.use_opac = False
 
         self.ratio_ply = 1  
         self.dist_ratio = 0.95 # 0.999
@@ -107,11 +109,11 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
 
-        self.atom_split = False
+        self.atom_split = True
         self.atom_proliferation_begin = 1000  
         self.atom_proliferation_until = 15000
-        self.atom_interval = 200
-        self.atom_last = False
+        self.atom_interval = 100
+        self.atom_last = True
 
         self.hierachical_depth = []
 
