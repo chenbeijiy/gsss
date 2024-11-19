@@ -129,13 +129,6 @@ class GaussianModel:
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
-    # def get_real_opa(self, t = 12., return_k=False):
-    #     opacity = self.spike_neuron(self.get_opacity, self.Vth_opa)
-    #     if not return_k:
-    #         return opacity
-    #     else:
-    #         return opacity, opacity
-    
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_xyz, self.get_scaling, scaling_modifier, self._rotation)
     
@@ -556,7 +549,7 @@ class GaussianModel:
         atom_scale = self.atom_scale_all[levels_lod]
         before = self._xyz.shape[0]
         atom_mask = torch.min(self.get_scaling, dim=1).values < self.atom_scale
-        atom_mask1 = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) > 8
+        atom_mask1 = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) > 6
         N = 3
         selected_pts_mask = torch.logical_and(atom_mask,atom_mask1)
         selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
@@ -637,8 +630,8 @@ class GaussianModel:
         
         atom_scale = self.atom_scale_all[-1]
         atom_mask = torch.min(self.get_scaling, dim=1).values < atom_scale
-        atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 6
-        selected_pts_mask = torch.logical_and(atom_mask,atom_mask1)
+        # atom_mask1 = (torch.max(self.get_scaling, dim=1).values/torch.min(self.get_scaling, dim=1).values) > 6
+        selected_pts_mask = torch.logical_and(atom_mask,atom_mask)
         selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
         selected_pts_mask = torch.logical_and(selected_pts_mask,visi)
 

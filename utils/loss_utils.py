@@ -17,6 +17,18 @@ from math import exp
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
 
+def L1_loss_edge(network_output, gt):
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]).float().unsqueeze(0).unsqueeze(0).to(gt.device)/4
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]]).float().unsqueeze(0).unsqueeze(0).to(gt.device)/4
+    dI_dx = torch.cat([F.conv2d(gt[i].unsqueeze(0), sobel_x, padding=1) for i in range(gt.shape[0])])
+    dI_dx = torch.mean(torch.abs(dI_dx), 0, keepdim=True)
+    dI_dy = torch.cat([F.conv2d(gt[i].unsqueeze(0), sobel_y, padding=1) for i in range(gt.shape[0])])
+    dI_dy = torch.mean(torch.abs(dI_dy), 0, keepdim=True)
+
+    weights = 2 * torch.sigmoid(dI_dx + dI_dy)
+
+    return (weights * torch.abs((network_output - gt))).mean()
+
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
 

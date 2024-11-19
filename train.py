@@ -13,7 +13,7 @@ import os
 import torch
 import math
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, L1_loss_edge
 from gaussian_renderer import render, network_gui, visi_acc_render
 import sys
 from scene import Scene, GaussianModel
@@ -170,6 +170,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
+    ema_L1depth_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -202,9 +203,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = viewpoint_cam.original_image.cuda()
 
         if dataset.use_decoupled_appearance:  # L1损失中加入外观模型
-            Ll1 = L1_loss_appearance(image, gt_image, gaussians, viewpoint_cam.idx)  
+            Ll1 = L1_loss_appearance(image, gt_image, gaussians, viewpoint_cam.idx)
+        elif dataset.use_edge_L1:  # 一定程度降低速度
+            Ll1 = L1_loss_edge(image, gt_image)
         else:
             Ll1 = l1_loss(image, gt_image)
+
         
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
@@ -218,43 +222,53 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         surf_depth = render_pkg['surf_depth']
         surf_normal = render_pkg['surf_normal']
 
-        # 曲率梯度loss  时间与高斯数量作为代价 有提升
-        # if iteration < opt.atom_proliferation_until:
-        #     Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
-        #     loss += opt.lambda_normal * Lnormal   # lambda = 0.1
-        # mask_vis = (rend_alpha > 1e-5)
-        # curv_n = normal2curv(surf_normal, mask_vis)  
-        # loss_curv = l1_loss(curv_n * 1, 0)
-        # curv_loss = 0.005 * loss_curv
+        # curv loss1  系数越大会增长点的数量，来自atom 建议修改
+        Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
+        loss += 0.01 * Lnormal 
 
-        # 法线一致性损失中加入曲率作为权重  暂定无用
-        # depth_map = surf_depth[0]
-        # if opt.depth_grad_thresh > 0:
-        #     depth_map_for_grad = depth_map[None, None]
-        #     sobel_kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
-        #     sobel_kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
+        # 法线一致性损失中加入曲率作为权重 （暂定无用）
+        depth_map = surf_depth[0]
+        if opt.use_depth_grad and opt.depth_grad_thresh > 0:
+            depth_map_for_grad = depth_map[None, None]
+            sobel_kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
+            sobel_kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
 
-        #     depth_map_for_grad = F.pad(depth_map_for_grad, pad=(1, 1, 1, 1), mode="replicate")
-        #     depth_grad_x = F.conv2d(depth_map_for_grad, sobel_kernel_x) / 3
-        #     depth_grad_y = F.conv2d(depth_map_for_grad, sobel_kernel_y) / 3
-        #     depth_grad_mag = torch.sqrt(depth_grad_x ** 2 + depth_grad_y ** 2)
-        #     depth_grad_weight = (depth_grad_mag < opt.depth_grad_thresh).float()
-        #     if opt.depth_grad_mask_dilation > 0:
-        #         mask_di = opt.depth_grad_mask_dilation
-        #         depth_grad_weight = -1 * F.max_pool2d(-1 * depth_grad_weight, mask_di * 2 + 1, stride=1, padding=mask_di)
-        #     depth_grad_weight = depth_grad_weight.squeeze().detach()
-        #     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0)) * depth_grad_weight
-        #     normal_error = normal_error[None]
-        # else:
-        #     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+            depth_map_for_grad = F.pad(depth_map_for_grad, pad=(1, 1, 1, 1), mode="replicate")
+            depth_grad_x = F.conv2d(depth_map_for_grad, sobel_kernel_x) / 3
+            depth_grad_y = F.conv2d(depth_map_for_grad, sobel_kernel_y) / 3
+            depth_grad_mag = torch.sqrt(depth_grad_x ** 2 + depth_grad_y ** 2)
+            depth_grad_weight = (depth_grad_mag < opt.depth_grad_thresh).float()
+            if opt.depth_grad_mask_dilation > 0:
+                mask_di = opt.depth_grad_mask_dilation
+                depth_grad_weight = -1 * F.max_pool2d(-1 * depth_grad_weight, mask_di * 2 + 1, stride=1, padding=mask_di)
+            depth_grad_weight = depth_grad_weight.squeeze().detach()
+            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0)) * depth_grad_weight
+            normal_error = normal_error[None]
+        else:
+            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
 
         normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
         normal_loss = lambda_normal * (normal_error).mean()
+
         # 随图像梯度调整深度失真项 暂定有用
         rend_dist = get_edge_aware_distortion_map(gt_image,rend_dist)
         dist_loss = lambda_dist * (rend_dist).mean()
 
-        # Depth regularization
+        # 不透明度loss1 无用
+        # opac_ = gaussians.get_opacity
+        # opac_mask0 = torch.gt(opac_, 0.01) * torch.le(opac_, 0.5)
+        # opac_mask1 = torch.gt(opac_, 0.5) * torch.le(opac_, 0.99)
+        # opac_mask = opac_mask0 * 0.01 + opac_mask1
+        # loss_opac = (torch.exp(-(opac_ - 0.5)**2 * 20) * opac_mask).mean()
+        # lambda_opac = 0.001
+        # loss_opac = lambda_opac * loss_opac
+
+        # mutual axis loss
+        # lambda_mutaxis = 0.001
+        # mutaxis_loss = compute_mutual_axis_loss(gaussians.get_scaling)
+        # mutaxis_loss *= lambda_mutaxis
+
+        # Depth regularization 反转深度loss
         Ll1depth_pure = 0.0
         depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
         if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
@@ -269,11 +283,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             Ll1depth = 0
 
-        # mutual axis loss
-        # lambda_mutaxis = 0.001
-        # mutaxis_loss = compute_mutual_axis_loss(gaussians.get_scaling)
-        # mutaxis_loss *= lambda_mutaxis
-
         # loss
         total_loss = loss + dist_loss + normal_loss
         
@@ -286,12 +295,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
+            ema_L1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_L1depth_for_log
 
             if iteration % 10 == 0:
                 loss_dict = {
                     "Loss": f"{ema_loss_for_log:.{5}f}",
                     "distort": f"{ema_dist_for_log:.{5}f}",
                     "normal": f"{ema_normal_for_log:.{5}f}",
+                    "L1depth":f"{ema_L1depth_for_log:.{5}f}",
                     "Points": f"{len(gaussians.get_xyz)}"
                 }
                 progress_bar.set_postfix(loss_dict) 
@@ -308,33 +319,45 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None 
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, iteration)
-                
-                # 不透明度衰减 有用
-                if iteration % opt.opacity_reduce_interval == 0 and opt.use_reduce:
-                    gaussians.reduce_opacity()
                         
-                # 同化
-                if  iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration >= opt.atom_proliferation_begin: 
+                # 同化分裂
+                if  opt.atom_split and iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration >= opt.atom_proliferation_begin: 
                     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                    # 分裂大高斯
-                    # gaussians.densify_and_scale_split(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, opt.densify_scale_factor, scene_mask, N=2, no_grad=True)
-                    visi = None
                     levels_lod = compose_levels_gaussian_for_current_views(opt, gaussians, viewpoint_cam)
                     visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
                     gaussians.atomize(levels_lod,scene_mask,visi)
 
+                # 不透明度衰减*0.8
+                if opt.use_reduce_opac and iteration % opt.opacity_reduce_interval == 0:
+                    gaussians.reduce_opacity()
+
+                # 多视角未见修剪 参见pgsr 还未修改cuda部分
+                if opt.use_multi_view_prune and iteration % 1000 == 0:
+                    visi_thre = 1
+                    visi_cnt = torch.zeros_like(gaussians.get_opacity)
+                    for view in scene.getTrainCameras():
+                        v_render = visi_acc_render
+                        render_pkg = v_render(view, gaussians, pipe, background)
+                        countgaus = render_pkg['countgaus']
+                        visi_cnt[countgaus > 0] += 1
+                    prune_mask = (visi_cnt < visi_thre).squeeze()
+                    if prune_mask.sum() > 0:
+                        print("mulit_view prune number:",prune_mask.sum().item())
+                        gaussians.prune_points(prune_mask)
+
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
-            # else:  # 15000次迭代后是否需要措施（修剪？致密化？）
-                # if iteration % 1000 == 0 and iteration <= 25000:
-                #     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                #     visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
-                #     gaussians.atomize_last(scene_mask, visi)
+            else:  # 15000次迭代后是否需要措施（修剪？原子化？）
+                # 仅同化
+                if opt.atom_last and iteration % 1000 == 0 and iteration <= 25000:
+                    scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
+                    visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
+                    gaussians.atomize_last(scene_mask, visi)
 
             # 去除低贡献度高斯
-            # if iteration <= opt.iterations and iteration % opt.contribution_prune_interval == 0:
-            #     prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
+            if opt.use_contribution_trim and iteration >= opt.contribution_prune_from_iter and iteration % opt.contribution_prune_interval == 0:
+                prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
  
             # Optimizer step 
             if iteration < opt.iterations:
@@ -345,6 +368,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if tb_writer is not None:
                 tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/L1depth_loss', ema_L1depth_for_log, iteration)
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):

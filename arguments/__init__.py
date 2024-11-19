@@ -59,6 +59,7 @@ class ModelParams(ParamGroup):
         self.atom_init_quantile = 0.3
 
         self.use_decoupled_appearance = False   # 外观模型
+        self.use_edge_L1 = False
 
         self.ratio_ply = 1  
         self.dist_ratio = 0.95 # 0.999
@@ -106,20 +107,24 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
 
+        self.atom_split = False
         self.atom_proliferation_begin = 1000  
         self.atom_proliferation_until = 15000
         self.atom_interval = 200
+        self.atom_last = False
 
         self.hierachical_depth = []
 
         self.appearance_embeddings_lr = 0.001
         self.appearance_network_lr = 0.001
 
+        self.use_depth_grad = False
         self.depth_grad_thresh = 0.03
         self.depth_grad_mask_dilation = 1
 
         self.densify_scale_factor = 0.5
 
+        self.use_contribution_trim = False
         self.contribution_prune_from_iter = 7000
         self.contribution_prune_interval = 1000
         self.contribution_prune_ratio = 0.05
@@ -129,8 +134,10 @@ class OptimizationParams(ParamGroup):
         self.depth_l1_weight_init = 0.5
         self.depth_l1_weight_final = 0.005
 
-        self.use_reduce = True
+        self.use_reduce_opac = True
         self.opacity_reduce_interval = 500  # remove floater
+
+        self.use_multi_view_prune = False
         
         super().__init__(parser, "Optimization Parameters")
 
