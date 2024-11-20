@@ -161,7 +161,7 @@ class GaussianModel:
         # 每层变为上一层的一半，尺寸逐渐缩小
         for i in range(lods):
             self.atom_scale_all[i] = initial_scale
-            initial_scale /= 2 
+            initial_scale *= 0.6 
 
         self.atom_scale_all = torch.flip(self.atom_scale_all, [0])  # 翻转
         print("atom scale_all:",self.atom_scale_all)
@@ -196,7 +196,6 @@ class GaussianModel:
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             {'params': [self._appearance_embeddings], 'lr': training_args.appearance_embeddings_lr, "name": "appearance_embeddings"},
             {'params': self.appearance_network.parameters(), 'lr': training_args.appearance_network_lr, "name": "appearance_network"}
-            # {'params': [self.Vth_opa], 'lr': training_args.vth_lr, "name": "Vth_opa"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -211,20 +210,6 @@ class GaussianModel:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
                 param_group['lr'] = lr
-            # if param_group["name"] == "Vth_opa":
-            #     reset_freq = 3000
-            #     if (iteration % reset_freq >= 0) and (iteration % reset_freq <= 300) and (iteration <= 18000):
-            #         lr = 0.0
-            #     elif (iteration <= 18000):
-            #         lr = 0.0002
-            #     elif (iteration <= 25000):
-            #         lr = 0.00014
-            #     else:
-            #         lr = 0.00005
-            #     lr *= 3
-            #     # if pipe.no_spike:
-            #     #     lr = 0
-            #     param_group['lr'] = lr
         return lr
 
     def construct_list_of_attributes(self):
@@ -265,15 +250,6 @@ class GaussianModel:
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
-    # def reset_opacity_spike(self):
-    #     # _, k = self.get_real_opa(return_k=True)
-    #     opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * max((self.Vth_opa.item()), 0.003)))
-    #     if self.opacity_activation(opacities_new.max()) < self.Vth_opa:
-    #         opacities_new = opacities_new + 1e-3
-
-    #     optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
-    #     self._opacity = optimizable_tensors["opacity"]
-
     def load_ply(self, path):
         plydata = PlyData.read(path)
 
@@ -293,7 +269,6 @@ class GaussianModel:
         features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
         for idx, attr_name in enumerate(extra_f_names):
             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
 
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
@@ -450,7 +425,7 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
         
-        selected_pts_mask = torch.logical_and(selected_pts_mask, ~long_mask)
+        # selected_pts_mask = torch.logical_and(selected_pts_mask, ~long_mask)
         
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.atom_scale)
@@ -582,7 +557,7 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)     
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)  
 
-        self.atom_scale_all*=0.99
+        self.atom_scale_all*=0.995
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))

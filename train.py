@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 try:
     from torch.utils.tensorboard import SummaryWriter
-    TENSORBOARD_FOUND = False
+    TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
 

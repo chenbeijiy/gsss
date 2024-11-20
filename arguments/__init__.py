@@ -110,7 +110,7 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold = 0.0002
 
         self.atom_split = True
-        self.atom_proliferation_begin = 1000  
+        self.atom_proliferation_begin = 500  
         self.atom_proliferation_until = 15000
         self.atom_interval = 100
         self.atom_last = True
