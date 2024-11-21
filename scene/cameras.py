@@ -51,10 +51,11 @@ class Camera(nn.Module):
             self.gt_alpha_mask = gt_alpha_mask.to(self.data_device)
         else:
             self.original_image *= torch.ones((1, self.image_height, self.image_width), device=self.data_device)
-            self.gt_alpha_mask = None
-            
+            self.gt_alpha_mask = torch.ones((1, self.image_height, self.image_width), device=self.data_device)
+
         if invdepthmap is not None:
-            self.depth_mask = torch.ones_like(self.gt_alpha_mask)
+            # self.depth_mask = torch.ones_like(self.gt_alpha_mask)
+            self.depth_mask = self.gt_alpha_mask
             self.invdepthmap = cv2.resize(invdepthmap, resolution)
             self.invdepthmap[self.invdepthmap < 0] = 0
             self.depth_reliable = True

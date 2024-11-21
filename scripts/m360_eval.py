@@ -13,7 +13,9 @@ import os
 from argparse import ArgumentParser
 
 mipnerf360_outdoor_scenes = ["bicycle", "flowers", "garden", "stump", "treehill"]
+mipnerf360_outdoor_scenes = ["bicycle"]
 mipnerf360_indoor_scenes = ["room", "counter", "kitchen", "bonsai"]
+mipnerf360_indoor_scenes = []
 # tanks_and_temples_scenes = ["truck", "train"]
 # deep_blending_scenes = ["drjohnson", "playroom"] 
 
@@ -37,12 +39,12 @@ if not args.skip_training or not args.skip_rendering:
     args = parser.parse_args()
 
 if not args.skip_training:
-    common_args = " --quiet --eval --test_iterations -1"
+    common_args = " --eval --test_iterations -1"
     for scene in mipnerf360_outdoor_scenes:
         source = args.mipnerf360 + "/" + scene
         depth_path = "./depth/m360/" + scene
-        print("python train.py -s " + source + " -i images_4 -m " + args.output_path + "/" + scene + " -d " + depth_path + common_args)
-        os.system("python train.py -s " + source + " -i images_4 -m " + args.output_path + "/" + scene + " -d " + depth_path + common_args)
+        print("python train.py -s " + source + " -i images_4 -m " + args.output_path + "/" + scene + common_args)
+        os.system("python train.py -s " + source + " -i images_4 -m " + args.output_path + "/" + scene + common_args)
     for scene in mipnerf360_indoor_scenes:
         source = args.mipnerf360 + "/" + scene
         depth_path = "./depth/m360/" + scene

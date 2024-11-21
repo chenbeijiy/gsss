@@ -150,7 +150,7 @@ def get_visi_list(gaussians, viewpoint_stack, pipe, bg):
     out["visi"] = visi
     return out
 
-def get_visi_mask_acc(gaussains, pipe, bg, n=500, up=False, around=True,  viewpoint_stack=None, sample_mode='grid'):
+def get_visi_mask_acc(gaussains, pipe, bg, n=500, up=False, around=True,  viewpoint_stack=None):
         fullcam = viewpoint_stack
         idx = torch.randint(0, len(fullcam), (n,))
         viewpoint_stack = [fullcam[i] for i in idx]
@@ -256,11 +256,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             loss_opac = lambda_opac * loss_opac
             loss += loss_opac
 
-        # mutual axis loss
-        # lambda_mutaxis = 0.001
-        # mutaxis_loss = compute_mutual_axis_loss(gaussians.get_scaling)
-        # mutaxis_loss *= lambda_mutaxis
-
         # Depth regularization 反转深度loss
         depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
         if dataset.use_invdepth and depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
@@ -317,39 +312,39 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if  opt.atom_split and iteration % opt.atom_interval == 0 and iteration < opt.atom_proliferation_until and iteration >= opt.atom_proliferation_begin: 
                     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
                     levels_lod = compose_levels_gaussian_for_current_views(opt, gaussians, viewpoint_cam)
-                    visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
+                    visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy())
                     gaussians.atomize(levels_lod,scene_mask,visi)
 
-                # 不透明度衰减*0.8
+                # 不透明度衰减*0.9
                 if opt.use_reduce_opac and iteration % opt.opacity_reduce_interval == 0:
                     gaussians.reduce_opacity()
 
                 # 多视角未见修剪 参见pgsr 还未修改cuda部分
-                if opt.use_multi_view_prune and iteration % 1000 == 0:
-                    visi_thre = 1
-                    visi_cnt = torch.zeros_like(gaussians.get_opacity)
-                    for view in scene.getTrainCameras():
-                        v_render = visi_acc_render
-                        render_pkg = v_render(view, gaussians, pipe, background)
-                        countgaus = render_pkg['countgaus']
-                        visi_cnt[countgaus > 0] += 1
-                    prune_mask = (visi_cnt < visi_thre).squeeze()
-                    if prune_mask.sum() > 0:
-                        print("mulit_view prune number:",prune_mask.sum().item())
-                        gaussians.prune_points(prune_mask)
+                # if opt.use_multi_view_prune and iteration % 1000 == 0:
+                #     visi_thre = 1
+                #     visi_cnt = torch.zeros_like(gaussians.get_opacity)
+                #     for view in scene.getTrainCameras():
+                #         v_render = visi_acc_render
+                #         render_pkg = v_render(view, gaussians, pipe, background)
+                #         countgaus = render_pkg['countgaus']
+                #         visi_cnt[countgaus > 0] += 1
+                #     prune_mask = (visi_cnt < visi_thre).squeeze()
+                #     if prune_mask.sum() > 0:
+                #         print("mulit_view prune number:",prune_mask.sum().item())
+                #         gaussians.prune_points(prune_mask)
 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
             else:  # 15000次迭代后是否需要措施（修剪？原子化？）
                 # 仅同化
-                if opt.atom_last and iteration % 1000 == 0 and iteration <= 25000:
+                if opt.atom_last and iteration % 2000 == 0 and iteration <= 25000:
                     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
-                    visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy(),sample_mode='random')
+                    visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy())
                     gaussians.atomize_last(scene_mask, visi)
 
             # 去除低贡献度高斯
-            if opt.use_contribution_trim and iteration > opt.contribution_prune_from_iter and iteration % opt.contribution_prune_interval == 0 and iteration < 25000:
+            if opt.use_contribution_trim and iteration in opt.contrbution_prunes:
                 prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
  
             # Optimizer step 

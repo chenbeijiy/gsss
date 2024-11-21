@@ -124,9 +124,10 @@ class OptimizationParams(ParamGroup):
         self.use_contribution_trim = True
         self.contribution_prune_from_iter = 10000
         self.contribution_prune_interval = 5000
-        self.contribution_prune_ratio = 0.1
+        self.contrbution_prunes = [12000, 20000]
+        self.contribution_prune_ratio = 0.05
 
-        self.sample_cams_num = 30
+        self.sample_cams_num = 100  # 30/100/200
 
         self.depth_l1_weight_init = 0.5
         self.depth_l1_weight_final = 0.005

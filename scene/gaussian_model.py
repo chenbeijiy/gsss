@@ -469,13 +469,13 @@ class GaussianModel:
         Q = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
 
         before = self._xyz.shape[0]
-        long_mask = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) >= 4
+        long_mask = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) >= 6
         self.densify_and_clone(grads, max_grad, grads_abs, Q, extent, long_mask)
         clone = self._xyz.shape[0]
         # print("clone number:",clone-before)
         
         before = self._xyz.shape[0]
-        long_mask = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) >= 4
+        long_mask = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) >= 6
         self.densify_and_split(grads, max_grad, grads_abs, Q, extent, long_mask)
         split = self._xyz.shape[0]
         # print("split number:",split-before)
@@ -527,7 +527,7 @@ class GaussianModel:
         atom_scale = self.atom_scale_all[levels_lod]
         before = self._xyz.shape[0]
         # atom_mask = torch.min(self.get_scaling, dim=1).values <= self.atom_scale
-        atom_mask1 = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) >= 4
+        atom_mask1 = (torch.max(self.get_scaling, dim=1).values / torch.min(self.get_scaling, dim=1).values) >= 6
         N = 3
         selected_pts_mask = torch.logical_and(atom_mask1,atom_mask1)
         selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
@@ -588,7 +588,7 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask,scene_mask)
         selected_pts_mask = torch.logical_and(selected_pts_mask,visi)
 
-        print("atom last number:",torch.sum(selected_pts_mask).item())
+        # print("atom last number:",torch.sum(selected_pts_mask).item())
 
         dist = self.get_scaling
         dist[selected_pts_mask] = atom_scale.float()
@@ -597,6 +597,6 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
 
     def reduce_opacity(self):
-        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.9))
+        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.95))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]

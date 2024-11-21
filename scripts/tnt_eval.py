@@ -2,7 +2,9 @@ import os
 from argparse import ArgumentParser
 
 tnt_360_scenes = ['Barn', 'Caterpillar', 'Ignatius', 'Truck']
+tnt_360_scenes = ['Truck']
 tnt_large_scenes = ['Meetingroom', 'Courthouse']
+tnt_large_scenes = []
 
 parser = ArgumentParser(description="Full evaluation script parameters")
 parser.add_argument("--skip_training", action="store_true")
