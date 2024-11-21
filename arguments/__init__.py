@@ -62,6 +62,7 @@ class ModelParams(ParamGroup):
         self.use_edge_L1 = False
         self.use_curv = False
         self.use_opac = False
+        self.use_invdepth = True
 
         self.ratio_ply = 1  
         self.dist_ratio = 0.95 # 0.999
@@ -110,7 +111,7 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold = 0.0002
 
         self.atom_split = True
-        self.atom_proliferation_begin = 500  
+        self.atom_proliferation_begin = 1000 
         self.atom_proliferation_until = 15000
         self.atom_interval = 100
         self.atom_last = True
@@ -120,16 +121,10 @@ class OptimizationParams(ParamGroup):
         self.appearance_embeddings_lr = 0.001
         self.appearance_network_lr = 0.001
 
-        self.use_depth_grad = False
-        self.depth_grad_thresh = 0.03
-        self.depth_grad_mask_dilation = 1
-
-        self.densify_scale_factor = 0.5
-
-        self.use_contribution_trim = False
-        self.contribution_prune_from_iter = 7000
-        self.contribution_prune_interval = 1000
-        self.contribution_prune_ratio = 0.05
+        self.use_contribution_trim = True
+        self.contribution_prune_from_iter = 10000
+        self.contribution_prune_interval = 5000
+        self.contribution_prune_ratio = 0.1
 
         self.sample_cams_num = 30
 

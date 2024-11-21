@@ -173,19 +173,3 @@ def colormap(img, cmap='jet'):
     img = torch.from_numpy(data / 255.).float().permute(2,0,1)
     plt.close()
     return img
-
-def normalize_pts(pts, trans, scale):
-    '''
-    trans: (4, 4), world to 
-    '''
-    if trans.ndim == 1:
-        pts = (pts - trans) / scale
-    else:
-        pts = ((trans[:3, :3] @ pts.T + trans[:3, 3:]).T) / scale
-    return pts
-
-def get_inside_normalized(xyz, trans, scale):
-    pts = normalize_pts(xyz, trans, scale)
-    with torch.no_grad():
-        inside = torch.all(torch.abs(pts) < 1, dim=-1)
-    return inside, pts

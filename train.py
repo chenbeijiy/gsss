@@ -96,24 +96,36 @@ def culling(xyz, cams, expansion=2):
 
     return valid_mask, scene_center
 
+def calculate_v_score(gaussians,score_list,ratio):
+    # Calculate the volume of each Gaussian component
+    volume = torch.prod(gaussians.get_scaling, dim=1)
+    # Determine the kth_percent_largest value
+    index = int(len(volume) * 0.9)
+    sorted_volume, _ = torch.sort(volume, descending=True)
+    kth_percent_largest = sorted_volume[index]
+    # Calculate v_list
+    v_list = torch.pow(volume / kth_percent_largest, ratio)
+    v_list = v_list * score_list
+    return v_list
+
+
 def prune_low_contribution_gaussians(gaussians, cameras, pipe, bg, K=5, prune_ratio=0.01):
     top_list = [None, ] * K
     for i, cam in enumerate(cameras):
         trans= render(cam, gaussians, pipe, bg, record_transmittance=True)
+        trans_v_score = calculate_v_score(gaussians,trans,0.1)
         if top_list[0] is not None:
-            m = trans > top_list[0]
+            m = trans_v_score > top_list[0]
             if m.any():
                 for i in range(K - 1):
                     top_list[K - 1 - i][m] = top_list[K - 2 - i][m]
-                top_list[0][m] = trans[m]
+                top_list[0][m] = trans_v_score[m]
         else:
-            top_list = [trans.clone() for _ in range(K)]
+            top_list = [trans_v_score.clone() for _ in range(K)]
 
     contribution = torch.stack(top_list, dim=-1).mean(-1)
     tile = torch.quantile(contribution, prune_ratio)
     prune_mask = contribution < tile
-    # 50% 
-    # mask[mask.clone()] = self.get_opacity[mask].squeeze() < self.get_opacity[mask].median()
     gaussians.prune_points(prune_mask)
     torch.cuda.empty_cache()
 
@@ -204,7 +216,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         if dataset.use_decoupled_appearance:  # L1损失中加入外观模型
             Ll1 = L1_loss_appearance(image, gt_image, gaussians, viewpoint_cam.idx)
-        elif dataset.use_edge_L1:  # 一定程度降低速度
+        elif dataset.use_edge_L1:  # 加入边缘图作为L1损失的权重
             Ll1 = L1_loss_edge(image, gt_image)
         else:
             Ll1 = l1_loss(image, gt_image)
@@ -216,7 +228,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
 
-        rend_alpha = render_pkg['rend_alpha']
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
         surf_depth = render_pkg['surf_depth']
@@ -226,27 +237,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if dataset.use_curv:
             Lnormal = edge_aware_normal_loss(gt_image, depth_to_normal(viewpoint_cam, render_pkg["surf_depth"]).permute(2,0,1))
             loss += 0.01 * Lnormal 
-
-        # 法线一致性损失中加入曲率作为权重 （暂定无用）
-        if opt.use_depth_grad and opt.depth_grad_thresh > 0:
-            depth_map = surf_depth[0]
-            depth_map_for_grad = depth_map[None, None]
-            sobel_kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
-            sobel_kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=depth_map.dtype, device=depth_map.device).view(1, 1, 3, 3)
-
-            depth_map_for_grad = F.pad(depth_map_for_grad, pad=(1, 1, 1, 1), mode="replicate")
-            depth_grad_x = F.conv2d(depth_map_for_grad, sobel_kernel_x) / 3
-            depth_grad_y = F.conv2d(depth_map_for_grad, sobel_kernel_y) / 3
-            depth_grad_mag = torch.sqrt(depth_grad_x ** 2 + depth_grad_y ** 2)
-            depth_grad_weight = (depth_grad_mag < opt.depth_grad_thresh).float()
-            if opt.depth_grad_mask_dilation > 0:
-                mask_di = opt.depth_grad_mask_dilation
-                depth_grad_weight = -1 * F.max_pool2d(-1 * depth_grad_weight, mask_di * 2 + 1, stride=1, padding=mask_di)
-            depth_grad_weight = depth_grad_weight.squeeze().detach()
-            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0)) * depth_grad_weight
-            normal_error = normal_error[None]
-        else:
-            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
 
         normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
         normal_loss = lambda_normal * (normal_error).mean()
@@ -272,19 +262,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # mutaxis_loss *= lambda_mutaxis
 
         # Depth regularization 反转深度loss
-        Ll1depth_pure = 0.0
         depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
-        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
+        if dataset.use_invdepth and depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
+            Ll1depth_pure = 0.0
             invDepth = render_pkg["invdepth"]
             mono_invdepth = viewpoint_cam.invdepthmap.cuda()
             depth_mask = viewpoint_cam.depth_mask.cuda()
 
             Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
-            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
-            loss += Ll1depth
-            Ll1depth = Ll1depth.item()
+            Ll1depth_loss = depth_l1_weight(iteration) * Ll1depth_pure 
+            loss += Ll1depth_loss
+            Ll1depth_loss = Ll1depth_loss.item()
         else:
-            Ll1depth = 0
+            Ll1depth_loss = 0
 
         # loss
         total_loss = loss + dist_loss + normal_loss
@@ -298,7 +288,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
-            ema_L1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_L1depth_for_log
+            ema_L1depth_for_log = 0.4 * Ll1depth_loss + 0.6 * ema_L1depth_for_log
 
             if iteration % 10 == 0:
                 loss_dict = {
@@ -359,7 +349,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.atomize_last(scene_mask, visi)
 
             # 去除低贡献度高斯
-            if opt.use_contribution_trim and iteration >= opt.contribution_prune_from_iter and iteration % opt.contribution_prune_interval == 0:
+            if opt.use_contribution_trim and iteration > opt.contribution_prune_from_iter and iteration % opt.contribution_prune_interval == 0 and iteration < 25000:
                 prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
  
             # Optimizer step 

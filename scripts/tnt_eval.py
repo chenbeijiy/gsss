@@ -1,21 +1,19 @@
 import os
 from argparse import ArgumentParser
 
-# tnt_360_scenes = ['Barn', 'Caterpillar', 'Ignatius', 'Truck']
-# tnt_large_scenes = ['Meetingroom', 'Courthouse']
-tnt_360_scenes = ['Barn']
-tnt_large_scenes = ['Meetingroom']
+tnt_360_scenes = ['Barn', 'Caterpillar', 'Ignatius', 'Truck']
+tnt_large_scenes = ['Meetingroom', 'Courthouse']
 
 parser = ArgumentParser(description="Full evaluation script parameters")
 parser.add_argument("--skip_training", action="store_true")
 parser.add_argument("--skip_rendering", action="store_true")
 parser.add_argument("--skip_metrics", action="store_true")
 parser.add_argument("--output_path", default="./eval/tnt")
-parser.add_argument('--TNT_data', "-TNT_data", required=True, type=str)
+parser.add_argument('--TNT_data', "-TNT_data", default="../data/TNT_GOF")
 args, _ = parser.parse_known_args()
 
 if not args.skip_metrics:
-    parser.add_argument('--TNT_GT', required=True, type=str)
+    parser.add_argument('--TNT_GT', default="../data/TNT_GOF/GT")
     args = parser.parse_args()
 
 
@@ -24,13 +22,17 @@ if not args.skip_training:
     
     for scene in tnt_360_scenes:
         source = args.TNT_data + "/" + scene
-        print("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args + ' --lambda_dist 100')
-        os.system("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args)
+        depth_path = "./depth/TnT/" + scene
+        common_args += "--lambda_dist 100"
+        print("python train.py -s " + source + " -m " + args.output_path + "/" + scene + " -d " + depth_path + common_args)
+        os.system("python train.py -s " + source + " -m " + args.output_path + "/" + scene + " -d " + depth_path + common_args)
 
     for scene in tnt_large_scenes:
         source = args.TNT_data + "/" + scene
-        print("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args+ ' --lambda_dist 10')
-        os.system("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args)
+        depth_path = "./depth/TnT/" + scene
+        common_args += "--lambda_dist 10"
+        print("python train.py -s " + source + " -m " + args.output_path + "/" + scene + " -d " + depth_path + common_args)
+        os.system("python train.py -s " + source + " -m " + args.output_path + "/" + scene + " -d " + depth_path + common_args)
 
 
 if not args.skip_rendering:
