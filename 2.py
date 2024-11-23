@@ -1,5 +1,6 @@
 import os
 
+os.system("python 1.py")
 
 os.system("python ./scripts/m360_eval.py")
 

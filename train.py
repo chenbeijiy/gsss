@@ -338,12 +338,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             else:  # 15000次迭代后是否需要措施（修剪？原子化？）
                 # 仅同化
-                if opt.atom_last and iteration % 2000 == 0 and iteration <= 25000:
+                if opt.atom_last and iteration % 1000 == 0 and iteration <= 25000:
                     scene_mask, scene_center = culling(gaussians.get_xyz, scene.getTrainCameras())
                     visi = get_visi_mask_acc(gaussians, pipe, background, opt.sample_cams_num, False, True, scene.getTrainCameras().copy())
                     gaussians.atomize_last(scene_mask, visi)
 
             # 去除低贡献度高斯
+            if "dtu-2dgs" in dataset.source_path:
+                opt.contrbution_prunes = [15000,20000]
+
             if opt.use_contribution_trim and iteration in opt.contrbution_prunes:
                 prune_low_contribution_gaussians(gaussians, all_cameras, pipe, background, K=5, prune_ratio=opt.contribution_prune_ratio)
  

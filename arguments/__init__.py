@@ -62,7 +62,7 @@ class ModelParams(ParamGroup):
         self.use_edge_L1 = False
         self.use_curv = False
         self.use_opac = False
-        self.use_invdepth = True
+        self.use_invdepth = False
 
         self.ratio_ply = 1  
         self.dist_ratio = 0.95 # 0.999
@@ -124,8 +124,8 @@ class OptimizationParams(ParamGroup):
         self.use_contribution_trim = True
         self.contribution_prune_from_iter = 10000
         self.contribution_prune_interval = 5000
-        self.contrbution_prunes = [12000, 20000]
-        self.contribution_prune_ratio = 0.05
+        self.contrbution_prunes = [12000, 20000,24000]  # 15000,20000
+        self.contribution_prune_ratio = 0.05 #0.1
 
         self.sample_cams_num = 100  # 30/100/200
 
@@ -133,7 +133,7 @@ class OptimizationParams(ParamGroup):
         self.depth_l1_weight_final = 0.005
 
         self.use_reduce_opac = True
-        self.opacity_reduce_interval = 500  # remove floater
+        self.opacity_reduce_interval = 1000  # remove floater
 
         self.use_multi_view_prune = False
         
